@@ -1,0 +1,16 @@
+services:
+  minio:
+    image: {{ minio_image }}
+    container_name: minio
+    command: server /data --console-address ":{{ minio_console_port }}"
+    environment:
+      MINIO_ROOT_USER: {{ minio_root_user }}
+      MINIO_ROOT_PASSWORD: {{ minio_root_password }}
+      MINIO_SERVER_URL: "{{ minio_public_s3_url }}"
+      MINIO_BROWSER_REDIRECT_URL: "{{ minio_public_console_url }}"
+    ports:
+      - "{{ minio_bind_address }}:{{ minio_s3_port }}:9000"
+      - "{{ minio_bind_address }}:{{ minio_console_port }}:9001"
+    volumes:
+      - {{ minio_data_dir }}:/data
+    restart: unless-stopped

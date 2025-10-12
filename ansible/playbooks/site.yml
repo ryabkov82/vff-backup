@@ -1,0 +1,6 @@
+---
+- name: Install/Update backup agent
+  hosts: all
+  become: true
+  roles:
+    - backup

@@ -1,0 +1,52 @@
+---
+# === S3 / Restic (секреты — в vault) ===
+backup_s3_endpoint: "https://s3.example.com"
+backup_s3_bucket: "vff-backups"
+backup_s3_region: "us-east-1"
+backup_restic_repository: "s3:{{ backup_s3_endpoint }}/{{ backup_s3_bucket }}"
+backup_restic_password: "{{ vault_restic_password }}"
+backup_aws_access_key_id: "{{ vault_s3_access_key_id }}"
+backup_aws_secret_access_key: "{{ vault_s3_secret_access_key }}"
+
+# Куда кладём textfile-метрики (для будущей интеграции)
+backup_node_exporter_textfile_dirs:
+  - /var/lib/node_exporter/textfile_collector
+
+# Retention (L7 / D14 / W8 / M12)
+backup_forget_policy:
+  keep_last: 7
+  keep_daily: 14
+  keep_weekly: 8
+  keep_monthly: 12
+
+# Скрипт + env
+backup_bin_path: /usr/local/bin/vff-backup.sh
+backup_env_dir: /etc/backup
+backup_env_file: "{{ backup_env_dir }}/restic.env"
+
+# Джобы (пример для SHM и Marzban, можно переопределять per-host)
+backup_jobs:
+  - name: shm
+    schedule: "02:30"
+    paths: ["/opt/shm"]                 # что бэкапим (директории/файлы)
+    db_dump:
+      enabled: true
+      container: "mysql"                # имя контейнера
+      # дамп с шифром в /opt/shm/_db_dumps
+      command: >
+        bash -lc 'mkdir -p /opt/shm/_db_dumps;
+        mysqldump --single-transaction --quick --routines --events --triggers
+        -u root -p"$MYSQL_ROOT_PASSWORD" shm
+        | gzip -9 > /opt/shm/_db_dumps/shm-$(date +%F).sql.gz'
+      dump_dir: "/opt/shm/_db_dumps"
+    containers: []                      # при необходимости pause/unpause
+
+  - name: marzban
+    schedule: "02:00"
+    paths: ["/opt/marzban"]
+    db_dump:
+      enabled: false
+      container: ""
+      command: ""
+      dump_dir: "/opt/marzban/_db_dumps"
+    containers: []

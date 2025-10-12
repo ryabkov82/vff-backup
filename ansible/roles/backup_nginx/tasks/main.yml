@@ -1,0 +1,191 @@
+---
+- name: Install nginx and deps
+  ansible.builtin.apt:
+    name: [nginx, apache2-utils, ssl-cert]
+    state: present
+    update_cache: true
+  tags: [nginx]
+
+- name: Ensure key dirs exist
+  tags: [nginx]
+  block:
+    - name: Ensure conf.d exists
+      ansible.builtin.file:
+        path: /etc/nginx/conf.d
+        state: directory
+        mode: "0755"
+    - name: Ensure sites-{available,enabled}
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ nginx_sites_available_dir }}"
+        - "{{ nginx_sites_enabled_dir }}"
+    - name: Ensure webroot for ACME challenges exists
+      ansible.builtin.file:
+        path: /var/www/html
+        state: directory
+        mode: "0755"
+
+- name: Install passlib for htpasswd
+  ansible.builtin.apt:
+    name: python3-passlib
+    state: present
+    update_cache: true
+  when: ansible_facts.os_family == 'Debian'
+  tags: [nginx]
+
+- name: Ensure basic auth file (if enabled)
+  when: nginx_basic_auth_enabled | bool
+  tags: [nginx]
+  block:
+    - name: Create empty htpasswd if missing
+      ansible.builtin.file:
+        path: /etc/nginx/.htpasswd
+        state: touch
+        mode: "0640"
+        owner: root
+        group: www-data
+    - name: Ensure users in htpasswd
+      no_log: false
+      community.general.htpasswd:
+        path: /etc/nginx/.htpasswd
+        name: "{{ item.user }}"
+        password: "{{ nginx_passwords[item.user] | default(item.pass) }}"
+        state: present
+        crypt_scheme: md5_crypt
+        mode: "0640"
+        owner: root
+        group: www-data
+      loop: "{{ nginx_users }}"
+
+- name: Render vhost for S3 API
+  vars:
+    ctx:
+      name: s3
+      server_name: "{{ s3_domain }}"
+      backend: "127.0.0.1:9000"
+      basic_desc: "MinIO S3 API"
+      is_s3_api: true
+      is_s3_console: false
+      allow_list: "{{ nginx_allow_list_s3 }}"
+  ansible.builtin.template:
+    src: site.conf.j2
+    dest: "{{ nginx_sites_available_dir }}/s3.conf"
+    mode: "0644"
+  notify: Reload nginx
+  tags: [nginx]
+
+- name: Render vhost for S3 Console
+  vars:
+    ctx:
+      name: s3_console
+      server_name: "{{ s3_console_domain }}"
+      backend: "127.0.0.1:9001"
+      basic_desc: "MinIO Console"
+      is_s3_api: false
+      is_s3_console: true
+      allow_list: []
+  ansible.builtin.template:
+    src: site.conf.j2
+    dest: "{{ nginx_sites_available_dir }}/s3-console.conf"
+    mode: "0644"
+  notify: Reload nginx
+  tags: [nginx]
+
+- name: Enable sites by symlink
+  ansible.builtin.file:
+    src: "{{ nginx_sites_available_dir }}/{{ item }}.conf"
+    dest: "{{ nginx_sites_enabled_dir }}/{{ item }}.conf"
+    state: link
+  loop:
+    - s3
+    - s3-console
+  notify: Reload nginx
+
+- name: Generate self-signed certs (if selfsigned)
+  when: nginx_cert_method == 'selfsigned'
+  tags: [nginx, certs]
+  block:
+    - name: Create key directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /etc/ssl/certs
+        - /etc/ssl/private
+    - name: Generate self-signed cert for {{ s3_domain }}
+      ansible.builtin.command: >-
+        openssl req -x509 -nodes -newkey rsa:2048 -days 3650
+        -keyout /etc/ssl/private/s3.privkey.pem
+        -out /etc/ssl/certs/s3.fullchain.pem
+        -subj "/CN={{ s3_domain }}"
+      args:
+        creates: /etc/ssl/certs/s3.fullchain.pem
+    - name: Generate self-signed cert for {{ s3_console_domain }}
+      ansible.builtin.command: >-
+        openssl req -x509 -nodes -newkey rsa:2048 -days 3650
+        -keyout /etc/ssl/private/s3-console.privkey.pem
+        -out /etc/ssl/certs/s3-console.fullchain.pem
+        -subj "/CN={{ s3_console_domain }}"
+      args:
+        creates: /etc/ssl/certs/s3-console.fullchain.pem
+
+- name: Obtain/renew certs with certbot (HTTP-01, per-domain)
+  when: nginx_cert_method == 'certbot'
+  tags: [nginx, certs]
+  block:
+    - name: Install certbot
+      ansible.builtin.apt:
+        name:
+          - certbot
+          - python3-certbot-nginx
+        state: present
+        update_cache: true
+
+    # Проверяем, есть ли уже сертификаты
+    - name: Check cert exists (s3)
+      ansible.builtin.stat:
+        path: "/etc/letsencrypt/live/{{ s3_domain }}/fullchain.pem"
+      register: s3_cert
+
+    - name: Check cert exists (s3-console)
+      ansible.builtin.stat:
+        path: "/etc/letsencrypt/live/{{ s3_console_domain }}/fullchain.pem"
+      register: s3c_cert
+
+    # Выпускаем для s3, если нет
+    - name: Issue cert for {{ s3_domain }}
+      when: not (s3_cert.stat.exists | default(false))
+      ansible.builtin.command: >-
+        certbot certonly --webroot -w /var/www/html
+        -d {{ s3_domain }}
+        --agree-tos -m {{ certbot_email }}
+        {{ '--staging' if certbot_staging else '' }}
+        --non-interactive --quiet
+      register: certbot_s3
+      changed_when: >-
+        'Congratulations' in (certbot_s3.stdout | default('')) or
+        'Congratulations' in (certbot_s3.stderr | default(''))
+
+    # Выпускаем для s3-console, если нет
+    - name: Issue cert for {{ s3_console_domain }}
+      when: not (s3c_cert.stat.exists | default(false))
+      ansible.builtin.command: >-
+        certbot certonly --webroot -w /var/www/html
+        -d {{ s3_console_domain }}
+        --agree-tos -m {{ certbot_email }}
+        {{ '--staging' if certbot_staging else '' }}
+        --non-interactive --quiet
+      register: certbot_s3c
+      changed_when: >-
+        'Congratulations' in (certbot_s3c.stdout | default('')) or
+        'Congratulations' in (certbot_s3c.stderr | default(''))
+
+- name: Ensure nginx enabled and started
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true

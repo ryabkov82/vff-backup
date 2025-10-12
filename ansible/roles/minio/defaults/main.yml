@@ -1,0 +1,42 @@
+---
+# Где и что поднимать
+minio_compose_dir: /opt/minio
+minio_data_dir: /srv/minio/data
+minio_image: "minio/minio:latest"
+
+# Bind только на localhost — наружу у нас Nginx
+minio_bind_address: "127.0.0.1"
+minio_s3_port: 9000
+minio_console_port: 9001
+
+# Учётка администратора (в vault)
+minio_root_user: "{{ vault_minio_root_user | default('vffadmin') }}"
+minio_root_password: "{{ vault_minio_root_password | default('CHANGE_ME_STRONG') }}"
+
+# Публичные URL (для корректных absolute URLs/редиректов в консоли)
+minio_public_s3_url: "https://{{ s3_domain | default('s3.example.com') }}"
+minio_public_console_url: "https://{{ s3_console_domain | default('s3-console.example.com') }}"
+
+# Бакет и пользователи
+minio_bucket: "vff-backups"
+
+# пример пользователей (секреты в vault):
+minio_users:
+  - { name: "shm-user", prefix: "shm/" }
+  - { name: "marzban-user", prefix: "marzban/" }
+
+# где хранить сгенерённые ключи (на контроллере Ansible)
+minio_secret_store: "{{ lookup('env', 'HOME') }}/.ansible/secrets/minio"
+minio_secret_length: 40
+minio_secret_chars: "ascii_letters,digits"
+
+# Ставить mc (MinIO Client) на хост
+minio_install_mc: true
+# было /usr/local/bin/mc
+mc_path: /usr/local/bin/mc-minio
+# можно pin-ить версию, см. ниже
+mc_version: "latest"
+
+
+# Устанавливать docker/docker-compose v2 при необходимости
+minio_install_docker: false

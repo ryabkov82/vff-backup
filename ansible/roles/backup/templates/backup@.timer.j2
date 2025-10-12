@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule VFF Backup job (%i)
+
+[Timer]
+# Конкретное время берём из defaults (поле schedule)
+OnCalendar=*-*-* {{ (backup_jobs | selectattr('name','equalto','%i') | list | first).schedule }}:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

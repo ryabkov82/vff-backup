@@ -1,0 +1,34 @@
+# Домены публичных точек
+s3_domain: "s3.vpn-for-friends.com"
+s3_console_domain: "s3-console.vpn-for-friends.com"
+
+
+# Разрешённые сети для доступа к S3 API (опционально)
+nginx_allow_list_s3: [] # напр. ["1.2.3.4/32", "5.6.7.0/24"]
+
+
+# Базовая HTTP-аутентификация (только для консоли, по умолчанию выкл)
+nginx_basic_auth_enabled: false
+nginx_users: [] # [{ user: admin, pass: "..." }]
+
+
+# TLS: как выдавать сертификаты
+# selfsigned | certbot | existing
+nginx_cert_method: certbot
+certbot_email: "admin@vpn-for-friends.com"
+certbot_staging: false
+
+
+# если existing: путь к сертификатам по именам сайтов
+nginx_certs:
+  s3:
+    fullchain: "/etc/ssl/certs/s3.fullchain.pem"
+    privkey: "/etc/ssl/private/s3.privkey.pem"
+  s3_console:
+    fullchain: "/etc/ssl/certs/s3-console.fullchain.pem"
+    privkey: "/etc/ssl/private/s3-console.privkey.pem"
+
+
+# Каталоги nginx
+nginx_sites_available_dir: /etc/nginx/sites-available
+nginx_sites_enabled_dir: /etc/nginx/sites-enabled

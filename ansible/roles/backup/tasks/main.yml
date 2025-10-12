@@ -1,0 +1,74 @@
+---
+- name: Ensure deps
+  ansible.builtin.package:
+    name:
+      - ca-certificates
+      - jq
+      - bash
+    state: present
+
+- name: Ensure textfile dirs exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ backup_node_exporter_textfile_dirs }}"
+
+- name: Env dir
+  ansible.builtin.file:
+    path: "{{ backup_env_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Env file
+  ansible.builtin.template:
+    src: restic.env.j2
+    dest: "{{ backup_env_file }}"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Install backup script
+  ansible.builtin.template:
+    src: vff-backup.sh.j2
+    dest: "{{ backup_bin_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Service
+  ansible.builtin.template:
+    src: backup@.service.j2
+    dest: /etc/systemd/system/backup@.service
+    mode: "0644"
+
+- name: Timer
+  ansible.builtin.template:
+    src: backup@.timer.j2
+    dest: /etc/systemd/system/backup@.timer
+    mode: "0644"
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Create dump dirs when enabled
+  when: item.db_dump is defined and item.db_dump.enabled | bool
+  ansible.builtin.file:
+    path: "{{ item.db_dump.dump_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop: "{{ backup_jobs }}"
+
+- name: Enable/start timers
+  ansible.builtin.systemd:
+    name: "backup@{{ item.name }}.timer"
+    state: started
+    enabled: true
+  loop: "{{ backup_jobs }}"

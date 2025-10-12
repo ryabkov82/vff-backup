@@ -1,0 +1,6 @@
+---
+- name: Install/Configure MinIO on hub
+  hosts: hub
+  become: true
+  roles:
+    - minio
