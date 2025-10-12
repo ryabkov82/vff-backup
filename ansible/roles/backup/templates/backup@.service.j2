@@ -1,0 +1,17 @@
+[Unit]
+Description=VFF Backup job (%i)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile={{ backup_env_file }}
+ExecStart={{ backup_bin_path }} %i
+User=root
+Group=root
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths={{ backup_env_dir }} /var/cache/restic {{ (backup_jobs | map(attribute='paths') | list | flatten | unique) | join(' ') }} {{ backup_node_exporter_textfile_dirs | join(' ') }}

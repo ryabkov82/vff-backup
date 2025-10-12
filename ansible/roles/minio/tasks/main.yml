@@ -1,0 +1,293 @@
+---
+# === [Опционально] Установка Docker/Compose v2 ===
+- name: Install Docker engine & compose v2 (optional)
+  when: minio_install_docker | bool
+  tags: [docker]
+  block:
+    - name: Ensure apt prerequisites
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+        update_cache: true
+
+    - name: Ensure keyrings dir
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Download Docker GPG key (ASCII)
+      ansible.builtin.get_url:
+        url: "https://download.docker.com/linux/{{ (ansible_facts.os_family | lower == 'debian') | ternary('debian', 'ubuntu') }}/gpg"
+        dest: /etc/apt/keyrings/docker.gpg.asc
+        mode: "0644"
+
+    - name: Dearmor Docker GPG key
+      ansible.builtin.command:
+        argv:
+          - gpg
+          - --dearmor
+          - --yes
+          - --output
+          - /etc/apt/keyrings/docker.gpg
+          - /etc/apt/keyrings/docker.gpg.asc
+      args:
+        creates: /etc/apt/keyrings/docker.gpg
+
+    - name: Set permissions for dearmored key
+      ansible.builtin.file:
+        path: /etc/apt/keyrings/docker.gpg
+        mode: "0644"
+
+    - name: Add Docker apt repository
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch={{ ansible_architecture | default('amd64') }}
+          signed-by=/etc/apt/keyrings/docker.gpg]
+          https://download.docker.com/linux/{{ (ansible_facts.os_family | lower == 'debian') | ternary('debian', 'ubuntu') }}
+          {{ ansible_facts.distribution_release | default('stable') }} stable
+        filename: docker
+        state: present
+        update_cache: true
+
+    - name: Install Docker packages
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+# === Каталоги и compose ===
+- name: Ensure directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ minio_compose_dir }}"
+    - "{{ minio_data_dir }}"
+
+- name: Render docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ minio_compose_dir }}/docker-compose.yml"
+    mode: "0644"
+  notify: Recreate MinIO containers (compose v2)
+
+- name: Start/Update MinIO via compose v2
+  community.docker.docker_compose_v2:
+    project_src: "{{ minio_compose_dir }}"
+    state: present
+
+- name: Wait for MinIO API port
+  ansible.builtin.wait_for:
+    host: "{{ minio_bind_address }}"
+    port: "{{ minio_s3_port }}"
+    delay: 1
+    timeout: 60
+
+# === Автогенерация секретов пользователей (если secret не задан) ===
+- name: Ensure local secret store exists (on controller)
+  when: (minio_users | default([])) | length > 0
+  ansible.builtin.file:
+    path: "{{ minio_secret_store }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Validate minio_users structure
+  when: (minio_users | default([])) | length > 0
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.prefix is defined
+      - (item.name | string) | length > 0
+      - (item.prefix | string) | length > 0
+    fail_msg: "minio_users[*] must contain non-empty 'name' and 'prefix'"
+  loop: "{{ minio_users | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('UNKNOWN') }}"
+
+- name: Build minio_users_effective (generate secret if missing)
+  when: (minio_users | default([])) | length > 0
+  no_log: false
+  ansible.builtin.set_fact:
+    minio_users_effective: >-
+      {{ (minio_users_effective | default([])) + [
+          {
+            'name': item.name,
+            'prefix': item.prefix,
+            'secret': (
+              (item.secret is defined and (item.secret | string) | length > 0)
+              | ternary(
+                  item.secret,
+                  lookup(
+                    'password',
+                    minio_secret_store ~ '/' ~ item.name
+                    ~ ' length=' ~ (minio_secret_length | string)
+                    ~ ' chars='  ~ minio_secret_chars
+                  )
+                )
+            )
+          }
+        ] }}
+  loop: "{{ minio_users | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# === Установка и настройка MinIO Client (mc-minio) ===
+- name: Install mc client (mc-minio)
+  when: minio_install_mc | bool
+  tags: [mc]
+  block:
+    - name: Ensure /usr/local/bin exists
+      ansible.builtin.file:
+        path: /usr/local/bin
+        state: directory
+        mode: "0755"
+
+    - name: Check current mc-minio version (if present)
+      ansible.builtin.command:
+        argv: ["{{ mc_path }}", "--version"]
+      register: mc_ver
+      changed_when: false
+      failed_when: false
+
+    - name: Download MinIO client (latest) as mc-minio
+      when: mc_version == 'latest' or (mc_ver.rc != 0)
+      ansible.builtin.get_url:
+        url: "https://dl.min.io/client/mc/release/linux-amd64/mc"
+        dest: "{{ mc_path }}"
+        mode: "0755"
+
+    - name: Download MinIO client as mc-minio (pinned {{ mc_version }})
+      when: mc_version != 'latest'
+      ansible.builtin.get_url:
+        url: "https://dl.min.io/client/mc/release/linux-amd64/archive/mc.{{ mc_version }}"
+        dest: "{{ mc_path }}"
+        mode: "0755"
+
+    - name: Configure mc alias (vff → local MinIO)
+      ansible.builtin.command:
+        argv:
+          - "{{ mc_path }}"
+          - alias
+          - set
+          - vff
+          - "http://{{ minio_bind_address }}:{{ minio_s3_port }}"
+          - "{{ minio_root_user }}"
+          - "{{ minio_root_password }}"
+      changed_when: false
+
+    - name: Create bucket if not exists
+      ansible.builtin.command:
+        argv: ["{{ mc_path }}", "mb", "--ignore-existing", "vff/{{ minio_bucket }}"]
+      changed_when: false
+
+    - name: Render per-user policies
+      when: (minio_users_effective | default(minio_users)) | length > 0
+      ansible.builtin.template:
+        src: policy-prefix.json.j2
+        dest: "/tmp/minio-policy-{{ item.name }}.json"
+        mode: "0644"
+      loop: "{{ minio_users_effective | default(minio_users) }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # === Policies ===
+    # 1) Create policy from JSON
+    - name: Create policy from JSON
+      ansible.builtin.command:
+        argv:
+          - "{{ mc_path }}"
+          - admin
+          - policy
+          - create
+          - vff
+          - "{{ item.name }}-policy"
+          - "/tmp/minio-policy-{{ item.name }}.json"
+      register: mc_policy_create
+      failed_when: false
+      changed_when: mc_policy_create.rc == 0
+      loop: "{{ minio_users_effective | default(minio_users | default([])) }}"
+      loop_control: { label: "{{ item.name }}" }
+      when: (minio_users_effective | default(minio_users | default([]))) | length > 0
+
+    # 1.5) Подготовим пары (user, result) для следующего шага
+    - name: Build list of (user, create_result) pairs
+      ansible.builtin.set_fact:
+        mc_policy_pairs: >-
+          {{ (minio_users_effective | default(minio_users | default([])))
+            | zip(mc_policy_create.results | default([])) | list }}
+      when: (minio_users_effective | default(minio_users | default([]))) | length > 0
+
+    # 2) Update тем, у кого create не прошёл (ОДИН when)
+    - name: Update existing policy from JSON (if create failed)
+      ansible.builtin.command:
+        argv:
+          - "{{ mc_path }}"
+          - admin
+          - policy
+          - update
+          - vff
+          - "{{ item.0.name }}-policy"
+          - "/tmp/minio-policy-{{ item.0.name }}.json"
+      changed_when: true
+      loop: "{{ mc_policy_pairs | default([]) }}"
+      loop_control: { label: "{{ item.0.name }}" }
+      when: item.1.rc is defined and item.1.rc != 0
+
+    # === Users ===
+    - name: Create/Update users
+      when: (minio_users_effective | default(minio_users | default([]))) | length > 0
+      no_log: true
+      ansible.builtin.command:
+        argv:
+          - "{{ mc_path }}"
+          - admin
+          - user
+          - add
+          - vff
+          - "{{ item.name }}"
+          - "{{ item.secret }}"
+      register: mc_user_add
+      failed_when: false
+      changed_when: mc_user_add.rc == 0
+      loop: "{{ minio_users_effective | default(minio_users | default([])) }}"
+      loop_control: { label: "{{ item.name }}" }
+
+    # === Attach policy → user ===
+    - name: Attach policy to user
+      when: (minio_users_effective | default(minio_users | default([]))) | length > 0
+      ansible.builtin.command:
+        argv:
+          - "{{ mc_path }}"
+          - admin
+          - policy
+          - attach
+          - vff
+          - "{{ item.name }}-policy"
+          - "--user"
+          - "{{ item.name }}"
+      changed_when: false
+      loop: "{{ minio_users_effective | default(minio_users | default([])) }}"
+      loop_control: { label: "{{ item.name }}" }
+
+    - name: Cleanup temporary policies
+      when: (minio_users_effective | default(minio_users)) | length > 0
+      ansible.builtin.file:
+        path: "/tmp/minio-policy-{{ item.name }}.json"
+        state: absent
+      loop: "{{ minio_users_effective | default(minio_users) }}"
+      loop_control:
+        label: "{{ item.name }}"

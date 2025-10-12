@@ -1,0 +1,10 @@
+*.retry
+*.swp
+*.swo
+__pycache__/
+.vscode/
+.secrets/
+*.log
+*.tmp
+*.bak
+vault-*.yml

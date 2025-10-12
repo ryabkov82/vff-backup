@@ -1,0 +1,6 @@
+---
+- name: Install local nginx reverse-proxy for MinIO (self-contained)
+  hosts: hub
+  become: true
+  roles:
+    - backup_nginx

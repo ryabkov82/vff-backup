@@ -1,0 +1,11 @@
+# домены для MinIO за Nginx
+s3_domain: "s3.vpn-for-friends.com"
+s3_console_domain: "s3-console.vpn-for-friends.com"
+
+# сертификаты
+nginx_cert_method: certbot
+certbot_email: "you@vpn-for-friends.com"
+
+# MinIO публикуемые URL (для корректных редиректов)
+minio_public_s3_url: "https://{{ s3_domain }}"
+minio_public_console_url: "https://{{ s3_console_domain }}"

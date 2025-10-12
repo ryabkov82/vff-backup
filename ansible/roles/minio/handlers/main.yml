@@ -1,0 +1,7 @@
+---
+- name: Recreate MinIO containers (compose v2)
+  community.docker.docker_compose_v2:
+    project_src: "{{ minio_compose_dir }}"
+    state: present
+    recreate: always
+    remove_orphans: true
