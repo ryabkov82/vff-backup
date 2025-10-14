@@ -3,22 +3,48 @@ set -euo pipefail
 JOB="${1:-}"
 [[ -z "$JOB" ]] && { echo "Usage: $(basename "$0") <job-name>"; exit 2; }
 
-# load env
-set -a; source "{{ backup_env_file }}"; set +a
+# load env (не падаем, если файла нет / ошибка)
+set -a
+if [[ -f "{{ backup_env_file }}" ]]; then
+  set +e
+  # shellcheck disable=SC1091
+  source "{{ backup_env_file }}"
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    echo "[ERROR] Failed to source {{ backup_env_file }} (rc=$rc)" >&2
+    exit 1
+  fi
+else
+  echo "[WARN] Env file {{ backup_env_file }} not found; continuing with current env" >&2
+fi
+set +a
 
-TEXTDIRS=({% for d in backup_node_exporter_textfile_dirs %}"{{ d }}"{% if not loop.last %} {% endif %}{% endfor %})
+# metrics toggle injected by template
+METRICS_ENABLED={{ (backup_enable_metrics | bool) | ternary("true","false") }}
+TEXTDIRS=({% if backup_enable_metrics | bool %}{% for d in backup_node_exporter_textfile_dirs %}"{{ d }}"{% if not loop.last %} {% endif %}{% endfor %}{% endif %})
 METRIC_FILE="backup_metrics.prom"
+
 start_ts=$(date +%s); status=0; size=0
 
 write_metrics() {
+  [[ "$METRICS_ENABLED" != "true" ]] && return 0
   now=$(date +%s)
+  # страхуемся на случай unset/строки "null"
+  _size="${size:-0}"
+  [[ "$_size" == "null" ]] && _size=0
+  # приводим к числу (иначе bash ругнётся на -gt)
+  if ! [[ "$_size" =~ ^[0-9]+$ ]]; then
+    _size=0
+  fi
+
   for d in "${TEXTDIRS[@]}"; do
     f="$d/$METRIC_FILE"
     {
       echo "backup_last_run_timestamp_seconds{job=\"${JOB}\"} ${now}"
       echo "backup_last_duration_seconds{job=\"${JOB}\"} $((now-start_ts))"
       echo "backup_last_status{job=\"${JOB}\"} ${status}"
-      [[ $size -gt 0 ]] && echo "backup_last_size_bytes{job=\"${JOB}\"} ${size}"
+      [[ ${_size} -gt 0 ]] && echo "backup_last_size_bytes{job=\"${JOB}\"} ${_size}"
     } > "$f.tmp" && mv "$f.tmp" "$f"
   done
 }
@@ -26,30 +52,80 @@ write_metrics() {
 trap 'status=1; write_metrics' ERR
 trap 'status=0; write_metrics' EXIT
 
-# embed jobs JSON
-read -r -d '' JOBS_JSON <<'EOF'
-{{ backup_jobs | to_nice_json }}
+# embed jobs JSON (через heredoc, без read -d '')
+JOBS_JSON=$(cat <<'EOF'
+{% set _jobs = (backup_jobs if (backup_jobs is defined and (backup_jobs|length)>0)
+                else ((backup_jobs_map|default({}))|dict2items|map(attribute='value')|list)) %}
+{{ _jobs | to_nice_json }}
 EOF
+)
 
 jq_job(){ echo "$JOBS_JSON" | jq -r ".[] | select(.name==\"$JOB\") | $1"; }
+
+# ensure job exists
+if ! echo "$JOBS_JSON" | jq -e ".[] | select(.name==\"$JOB\")" >/dev/null; then
+  echo "[ERROR] job '$JOB' not found in JOBS_JSON" >&2
+  exit 2
+fi
 
 PATHS=$(jq_job '.paths | @sh')
 DUMP_ENABLED=$(jq_job '.db_dump.enabled // false')
 DUMP_DIR=$(jq_job '.db_dump.dump_dir // ""')
 DUMP_CONTAINER=$(jq_job '.db_dump.container // ""')
 DUMP_COMMAND=$(jq_job '.db_dump.command // ""')
+COMPOSE_DIR=$(jq_job '.compose_dir // ""')
 PAUSE_CONTAINERS=$(jq_job '.containers // [] | @sh')
+EXCLUDES=$(jq_job '.exclude_paths // [] | @sh')
+
+# соберём флаги --exclude
+RESTIC_EXCLUDES=""
+if [[ -n "$EXCLUDES" ]]; then
+  eval "set -- $EXCLUDES"
+  for e in "$@"; do
+    # безопасно экранируем путь
+    RESTIC_EXCLUDES+=" --exclude $(printf %q "$e")"
+  done
+fi
 
 # optional dump
 if [[ "$DUMP_ENABLED" == "true" && -n "$DUMP_COMMAND" ]]; then
   mkdir -p "$DUMP_DIR" || true
   if [[ -n "$DUMP_CONTAINER" ]]; then
-    docker compose ps --format '{{.Name}}' | grep -qx "$DUMP_CONTAINER" || true
-    docker compose exec -T "$DUMP_CONTAINER" $DUMP_COMMAND
+    # если задан каталог проекта — зайдём в него
+    if [[ -n "$COMPOSE_DIR" ]]; then cd "$COMPOSE_DIR"; fi
+    # exec только если сервис действительно есть
+    if docker compose ps --services | grep -qx "$DUMP_CONTAINER"; then
+      docker compose exec -T "$DUMP_CONTAINER" bash -lc "$DUMP_COMMAND"
+    else
+      echo "[WARN] compose service '$DUMP_CONTAINER' not found; skipping db_dump" >&2
+    fi
   else
     bash -lc "$DUMP_COMMAND"
   fi
 fi
+
+# cleanup old DB dumps in dump_dir (before restic backup)
+# keep N newest by count, or by days if count==0 and days>0
+CLEAN_KEEP_COUNT={{ backup_dump_keep_count | default(7) | int }}
+CLEAN_KEEP_DAYS={{ backup_dump_keep_days  | default(0) | int }}
+
+{% raw %}
+if [[ -n "$DUMP_DIR" ]]; then
+  if [[ $CLEAN_KEEP_COUNT -gt 0 ]]; then
+    shopt -s nullglob
+    # берём только *.sql.gz (наши дампы)
+    mapfile -t _dumps < <(ls -1t "$DUMP_DIR"/*.sql.gz 2>/dev/null || true)
+    if (( ${#_dumps[@]} > CLEAN_KEEP_COUNT )); then
+      # удалить всё, что «хвост» после N последних
+      to_delete=( "${_dumps[@]:CLEAN_KEEP_COUNT}" )
+      rm -f -- "${to_delete[@]}" 2>/dev/null || true
+    fi
+    shopt -u nullglob
+  elif [[ $CLEAN_KEEP_DAYS -gt 0 ]]; then
+    find "$DUMP_DIR" -type f -name '*.sql.gz' -mtime +"$CLEAN_KEEP_DAYS" -delete 2>/dev/null || true
+  fi
+fi
+{% endraw %}
 
 # pause containers if set
 if [[ -n "$PAUSE_CONTAINERS" ]]; then
@@ -58,19 +134,23 @@ if [[ -n "$PAUSE_CONTAINERS" ]]; then
 fi
 
 # backup
-if out=$(restic backup --one-file-system --json --tag "$JOB" $(eval echo $PATHS)); then
-  size=$(echo "$out" | jq -r 'select(.message_type=="summary") | .data_bytes')
+if out=$(eval "restic backup --one-file-system --json --tag \"$JOB\" $RESTIC_EXCLUDES $(eval echo $PATHS)"); then
+  size=$(echo "$out" | jq -r 'select(.message_type=="summary") | (.data_added // .total_bytes_processed // 0)')
 else
   status=1
 fi
 
 # retention
+set +e
 restic forget --json \
   --keep-last {{ backup_forget_policy.keep_last }} \
   --keep-daily {{ backup_forget_policy.keep_daily }} \
   --keep-weekly {{ backup_forget_policy.keep_weekly }} \
   --keep-monthly {{ backup_forget_policy.keep_monthly }} \
-  --prune >/dev/null || status=1
+  --prune >/dev/null
+rc=$?
+set -e
+if [[ $rc -ne 0 ]]; then status=1; fi
 
 # unpause
 if [[ -n "$PAUSE_CONTAINERS" ]]; then

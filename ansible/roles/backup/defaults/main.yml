@@ -1,16 +1,25 @@
 ---
-# === S3 / Restic (секреты — в vault) ===
-backup_s3_endpoint: "https://s3.example.com"
-backup_s3_bucket: "vff-backups"
+# === S3 / Restic (секреты — НЕ в defaults) ===
+backup_minio_endpoint: "https://s3.example.com"
+backup_bucket: "vff-backups"
 backup_s3_region: "us-east-1"
-backup_restic_repository: "s3:{{ backup_s3_endpoint }}/{{ backup_s3_bucket }}"
-backup_restic_password: "{{ vault_restic_password }}"
-backup_aws_access_key_id: "{{ vault_s3_access_key_id }}"
-backup_aws_secret_access_key: "{{ vault_s3_secret_access_key }}"
+backup_restic_repository: ""   # задание в group_vars/<service>.yml
 
-# Куда кладём textfile-метрики (для будущей интеграции)
+# секреты по умолчанию НЕ задаём
+backup_restic_password: null
+backup_aws_access_key_id: null
+backup_aws_secret_access_key: null
+
+# Метрики Prometheus textfile (node_exporter) — можно отключить
+backup_enable_metrics: true
+
+# Куда писать метрики (используется только если backup_enable_metrics=true)
 backup_node_exporter_textfile_dirs:
   - /var/lib/node_exporter/textfile_collector
+
+# Расписание таймеров (глобально для всех джобов этой роли)
+backup_timer_oncalendar: "*-*-* 02:30:00"
+backup_timer_randomized_delay: "900s"
 
 # Retention (L7 / D14 / W8 / M12)
 backup_forget_policy:
@@ -19,34 +28,19 @@ backup_forget_policy:
   keep_weekly: 8
   keep_monthly: 12
 
-# Скрипт + env
+# Скрипт + env (единообразно!)
 backup_bin_path: /usr/local/bin/vff-backup.sh
-backup_env_dir: /etc/backup
+backup_env_dir: /etc/vff-backup
 backup_env_file: "{{ backup_env_dir }}/restic.env"
 
-# Джобы (пример для SHM и Marzban, можно переопределять per-host)
-backup_jobs:
-  - name: shm
-    schedule: "02:30"
-    paths: ["/opt/shm"]                 # что бэкапим (директории/файлы)
-    db_dump:
-      enabled: true
-      container: "mysql"                # имя контейнера
-      # дамп с шифром в /opt/shm/_db_dumps
-      command: >
-        bash -lc 'mkdir -p /opt/shm/_db_dumps;
-        mysqldump --single-transaction --quick --routines --events --triggers
-        -u root -p"$MYSQL_ROOT_PASSWORD" shm
-        | gzip -9 > /opt/shm/_db_dumps/shm-$(date +%F).sql.gz'
-      dump_dir: "/opt/shm/_db_dumps"
-    containers: []                      # при необходимости pause/unpause
+# Пути по умолчанию (могут переопределяться группами/хостами/джобом)
+backup_compose_dir: /opt/shm
+backup_db_dump_dir: /var/backups/db
 
-  - name: marzban
-    schedule: "02:00"
-    paths: ["/opt/marzban"]
-    db_dump:
-      enabled: false
-      container: ""
-      command: ""
-      dump_dir: "/opt/marzban/_db_dumps"
-    containers: []
+backup_jobs: []
+
+# Ротация локальных SQL-дампов (перед restic backup)
+# Если >0 — оставлять только N последних файлов *.sql.gz в dump_dir
+backup_dump_keep_count: 7
+# Если >0 и backup_dump_keep_count == 0 — удалять старше N дней
+backup_dump_keep_days: 0

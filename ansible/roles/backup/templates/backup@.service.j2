@@ -5,13 +5,51 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-EnvironmentFile={{ backup_env_file }}
+# не падать, если env ещё не создан
+EnvironmentFile=-{{ backup_env_file }}
+# имя джоба передаём как %i
 ExecStart={{ backup_bin_path }} %i
+
 User=root
 Group=root
+WorkingDirectory=/root
+
+# Нагрузка/IO
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=6
+
+# Безопасность (общая, без привязки к джобам)
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths={{ backup_env_dir }} /var/cache/restic {{ (backup_jobs | map(attribute='paths') | list | flatten | unique) | join(' ') }} {{ backup_node_exporter_textfile_dirs | join(' ') }}
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=~
+
+# Куда ЭТОМУ сервису реально нужно писать:
+# - каталог с env (логично разрешить)
+# - кэш restic
+# - общий каталог дампов БД (пер-джобный dump_dir у нас внутри него)
+# всегда нужны
+ReadWritePaths={{ backup_env_dir }} /var/cache/restic
+
+{% if backup_enable_metrics | bool and (backup_node_exporter_textfile_dirs | length) > 0 -%}
+# textfile метрики — только если включены
+ReadWritePaths={{ backup_node_exporter_textfile_dirs | join(' ') }}
+{%- endif %}
+
+{# dump_dir включаем только если есть хотя бы один джоб с db_dump.enabled=true #}
+{% set jobs_need_dump = (backup_jobs | selectattr('db_dump','defined')
+                                     | selectattr('db_dump.enabled','defined')
+                                     | selectattr('db_dump.enabled') | list) -%}
+{% if jobs_need_dump | length > 0 -%}
+ReadWritePaths={{ backup_db_dump_dir }}
+{%- endif %}
+
+[Install]
+WantedBy=multi-user.target

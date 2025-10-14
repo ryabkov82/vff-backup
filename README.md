@@ -1,3 +1,4 @@
+
 # 🧰 VFF Backup
 
 **VFF Backup** — система централизованных резервных копий для инфраструктуры [VPN for Friends](https://vpn-for-friends.com).  
@@ -8,7 +9,7 @@
 ## 📦 Архитектура
 
 ```
-VPN Nodes (Marzban, SHM)
+[Marzban, SHM]
    │
    │ Restic → S3
    ▼
@@ -37,19 +38,24 @@ VPN Nodes (Marzban, SHM)
 ```
 ansible/
 ├── group_vars/
-│   └── hub.vault.yml        # Секреты (MinIO root / user secrets)
-├── hosts.ini                # Инвентарь (hub, vpn, ...)
+│   ├── all.yml                # Общие параметры
+│   ├── backup_clients.yml     # Настройки клиентов (шаблон)
+│   ├── shm.yml                # Настройки бэкапа SHM
+│   ├── marzban.yml            # Настройки бэкапа Marzban
+│   └── hub.vault.yml          # Секреты (MinIO root / user secrets)
+├── hosts.ini                  # Инвентарь (hub, vpn, ...)
 ├── playbooks/
-│   ├── nginx.yml            # Установка reverse-proxy
-│   └── minio.yml            # Развёртывание MinIO
+│   ├── nginx.yml              # Установка reverse-proxy
+│   ├── minio.yml              # Развёртывание MinIO
+│   └── backup.yml             # Установка backup-агента на узлах
 └── roles/
-    ├── backup_nginx/        # Nginx + Let's Encrypt
-    ├── minio/               # MinIO + пользователи
-    └── backup/              # Роль бэкапов (restic, timers)
+    ├── backup_nginx/          # Nginx + Let's Encrypt
+    ├── minio/                 # MinIO + пользователи
+    └── backup/                # Роль бэкапов (restic, timers)
 docs/
 ├── backup-nginx-role.md
 ├── minio-role.md
-└── (позже) backup-role.md
+└── backup-role.md
 Makefile
 ```
 
@@ -62,10 +68,17 @@ Makefile
 make ping
 
 # Установка Nginx reverse-proxy на хабе
-make nginx-install HOST=monitoring-hub ANSIBLE_FLAGS=--ask-vault-pass
+make nginx HOST=monitoring-hub ANSIBLE_FLAGS=--ask-vault-pass
 
 # Установка MinIO на хабе
 make minio HOST=monitoring-hub ANSIBLE_FLAGS=--ask-vault-pass
+
+# Установка backup-агента (restic) на клиентских узлах
+make backup LIMIT=ru-msk-1
+
+# Ручной запуск и просмотр логов бэкапа
+make backup-run  LIMIT=ru-msk-1 BACKUP_JOB=shm
+make backup-logs LIMIT=ru-msk-1 BACKUP_JOB=shm
 ```
 
 ---
@@ -95,7 +108,7 @@ vault_marzban_user_secret: "..."
 |------|-------------|---------------|
 | **backup_nginx** | Nginx reverse-proxy с certbot для MinIO | [docs/backup-nginx-role.md](docs/backup-nginx-role.md) |
 | **minio** | Развёртывание S3-хранилища, политики и пользователи | [docs/minio-role.md](docs/minio-role.md) |
-| **backup** | (в разработке) restic, systemd timers, метрики | *(будет добавлено позже)* |
+| **backup** | Restic, systemd timers, очистка дампов, метрики | [docs/backup-role.md](docs/backup-role.md) |
 
 ---
 
@@ -109,4 +122,3 @@ vault_marzban_user_secret: "..."
 ## 🧩 Контакты
 
 - Telegram: [@vpn_for_friends_support](https://t.me/vpn_for_friends_support)
-- Email: `admin@vpn-for-friends.com`

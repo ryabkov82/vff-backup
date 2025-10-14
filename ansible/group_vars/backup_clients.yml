@@ -1,0 +1,27 @@
+# Общие для всех клиентов
+backup_minio_endpoint: "https://s3.vpn-for-friends.com"
+backup_bucket: "vff-backups"
+backup_s3_region: "us-east-1"
+
+backup_node_exporter_textfile_dirs:
+  - /var/lib/node_exporter/textfile_collector
+
+backup_timer_oncalendar: "*-*-* 03:15:00"
+backup_timer_randomized_delay: "600s"
+
+# Политика ретенции
+backup_forget_policy:
+  keep_last: 7
+  keep_daily: 7
+  keep_weekly: 5
+  keep_monthly: 6
+
+# Где хранить env/скрипт/дефолтные пути
+backup_env_dir: /etc/vff-backup
+backup_env_file: "{{ backup_env_dir }}/restic.env"
+backup_bin_path: /usr/local/bin/vff-backup.sh
+backup_compose_dir: /opt/shm
+backup_db_dump_dir: /var/backups/db
+
+# Карта джобов (сервисные группы добавят свои ключи)
+backup_jobs_map: {}
