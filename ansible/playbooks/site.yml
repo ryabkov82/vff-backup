@@ -1,6 +1,11 @@
----
-- name: Install/Update backup agent
-  hosts: all
-  become: true
-  roles:
-    - backup
+- name: Include MinIO playbook
+  ansible.builtin.import_playbook: minio.yml
+  tags: [minio]
+
+- name: Include Nginx playbook
+  ansible.builtin.import_playbook: nginx.yml
+  tags: [nginx]
+
+- name: Include Backup playbook
+  ansible.builtin.import_playbook: backup.yml
+  tags: [backup]

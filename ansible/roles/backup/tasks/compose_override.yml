@@ -1,0 +1,90 @@
+# Если вообще нет джобов с db_dump.container — пропускаем весь блок
+- name: Select jobs requiring compose override
+  ansible.builtin.set_fact:
+    backup_jobs_needing_override: >-
+      {{ (backup_jobs | default([]))
+         | selectattr('db_dump', 'defined')
+         | selectattr('db_dump.enabled', 'defined')
+         | selectattr('db_dump.enabled')
+         | selectattr('db_dump.container', 'defined')
+         | list }}
+  when: backup_jobs is defined
+
+- name: Skip compose override when nothing to render
+  ansible.builtin.meta: noop
+  when: (backup_jobs_needing_override | default([])) | length == 0
+
+# Проверка наличия docker-compose.yml (per-job compose_dir или общий)
+- name: Check compose dir per job
+  ansible.builtin.stat:
+    path: "{{ (item.compose_dir | default(backup_compose_dir)) }}/docker-compose.yml"
+  register: compose_stat
+  loop: "{{ backup_jobs_needing_override }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# Падаем по каждому отсутствующему compose-файлу
+- name: Fail if compose file missing for a job
+  ansible.builtin.fail:
+    msg: >-
+      docker-compose.yml not found at
+      {{ (item.item.compose_dir | default(backup_compose_dir)) }}
+      for job {{ item.item.name }}
+  when: not item.stat.exists
+  loop: "{{ compose_stat.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+# Рендер override (по одному файлу на джоб)
+- name: Render docker-compose override for db_dump.container
+  vars:
+    job_name: "{{ item.name }}"
+    db_container: "{{ item.db_dump.container }}"
+    dump_dir: "{{ item.db_dump.dump_dir | default(backup_db_dump_dir) }}"
+    compose_dir: "{{ item.compose_dir | default(backup_compose_dir) }}"
+  ansible.builtin.template:
+    src: "docker-compose.override.backup.yml.j2"
+    dest: "{{ compose_dir }}/docker-compose.override.backup-{{ job_name }}.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ backup_jobs_needing_override }}"
+  register: compose_override_results
+
+# Сбор всех override-файлов в конкретном compose_dir и up -d (per compose_dir)
+- name: Build list of compose_dirs used by overrides
+  ansible.builtin.set_fact:
+    override_compose_dirs: >-
+      {{
+        (compose_override_results.results
+          | map(attribute='invocation')
+          | map(attribute='module_args')
+          | map(attribute='dest')
+          | map('dirname')
+          | list
+        )
+        | unique
+      }}
+
+- name: Find overrides per compose_dir
+  ansible.builtin.find:
+    paths: "{{ item }}"
+    patterns: "docker-compose.override.backup-*.yml"
+    file_type: file
+  loop: "{{ override_compose_dirs }}"
+  register: found_overrides
+
+- name: Bring up services with overrides (docker compose up -d)
+  community.docker.docker_compose_v2:
+    project_src: "{{ item.item }}"
+    files: >-
+      {{
+        [ item.item ~ '/docker-compose.yml' ] +
+        (item.files | map(attribute='path') | list)
+      }}
+    state: present
+    build: never
+    pull: policy
+    services: []
+    remove_orphans: true
+  loop: "{{ found_overrides.results }}"

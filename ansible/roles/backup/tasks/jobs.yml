@@ -1,0 +1,18 @@
+# каталоги дампов per-job (только где включено)
+- name: Create per-job dump dirs when enabled
+  when: item.db_dump is defined and (item.db_dump.enabled | bool)
+  ansible.builtin.file:
+    path: "{{ item.db_dump.dump_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop: "{{ backup_jobs | default([]) }}"
+
+# таймеры per-job
+- name: Enable/start per-job timers
+  ansible.builtin.systemd:
+    name: "backup@{{ item.name }}.timer"
+    state: started
+    enabled: true
+  loop: "{{ backup_jobs | default([]) }}"

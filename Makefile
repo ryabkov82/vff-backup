@@ -5,8 +5,9 @@ INVENTORY    ?= ansible/hosts.ini
 
 # Плейбук MinIO
 PLAY_MINIO   ?= ansible/playbooks/minio.yml
-
-PLAY_NGINX     ?= ansible/playbooks/nginx.yml
+PLAY_NGINX   ?= ansible/playbooks/nginx.yml
+PLAY_BACKUP  ?= ansible/playbooks/backup.yml
+PLAY_SITE    ?= ansible/playbooks/site.yml
 
 # Доп. флаги для ansible/ansible-playbook (например: --ask-vault-pass)
 ANSIBLE_FLAGS?=
@@ -54,3 +55,36 @@ nginx: ## Настроить Nginx на хабе (reverse-proxy, certs, htpasswd
 	@#   make nginx LIMIT=monitoring-hub
 	@#   make nginx LIMIT=hub ANSIBLE_FLAGS=--ask-vault-pass
 	$(ANSIBLE) -i $(INVENTORY) $(PLAY_NGINX) $(if $(strip $(LIMIT)),--limit $(LIMIT),) $(ANSIBLE_FLAGS)
+
+.PHONY: backup site
+
+backup: ## Установка/обновление backup-агента (роль backup)
+	@# Примеры:
+	@#   make backup
+	@#   make backup LIMIT=shm
+	@#   make backup LIMIT=backup_clients ANSIBLE_FLAGS=--ask-vault-pass
+	$(ANSIBLE) -i $(INVENTORY) $(PLAY_BACKUP) $(LIMIT_FLAG) $(ANSIBLE_FLAGS)
+
+site: ## Запуск общего оркестратора site.yml (minio -> nginx -> backup)
+	@# Примеры:
+	@#   make site
+	@#   make site LIMIT=backup_clients
+	@#   make site ANSIBLE_FLAGS="--ask-vault-pass -t backup"
+	$(ANSIBLE) -i $(INVENTORY) $(PLAY_SITE) $(LIMIT_FLAG) $(ANSIBLE_FLAGS)
+
+# === Backup (systemd) ===
+BACKUP_JOB ?= shm
+
+backup-run: ## Разово запустить backup@$(BACKUP_JOB).service на хостах (используй LIMIT=...)
+	@# Примеры:
+	@#   make backup-run
+	@#   make backup-run LIMIT=ru-msk-1 BACKUP_JOB=shm
+	$(ANSIBLE_ADHOC) -i $(INVENTORY) $(LIMIT) -b -m ansible.builtin.shell -a \
+		"systemctl start backup@$(BACKUP_JOB).service" $(ANSIBLE_FLAGS)
+
+backup-logs: ## Показать последние 100 строк журнала backup@$(BACKUP_JOB).service
+	@# Примеры:
+	@#   make backup-logs
+	@#   make backup-logs LIMIT=ru-msk-1 BACKUP_JOB=shm
+	$(ANSIBLE_ADHOC) -i $(INVENTORY) $(LIMIT) -b -m ansible.builtin.shell -a \
+		"journalctl -u backup@$(BACKUP_JOB).service -n 100 --no-pager" $(ANSIBLE_FLAGS)

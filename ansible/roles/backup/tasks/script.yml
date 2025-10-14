@@ -1,0 +1,7 @@
+- name: Install backup script
+  ansible.builtin.template:
+    src: vff-backup.sh.j2
+    dest: "{{ backup_bin_path }}"
+    owner: root
+    group: root
+    mode: "0755"

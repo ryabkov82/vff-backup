@@ -1,11 +1,11 @@
 [Unit]
-Description=Schedule VFF Backup job (%i)
+Description=VFF Backup job %i timer
 
 [Timer]
-# Конкретное время берём из defaults (поле schedule)
-OnCalendar=*-*-* {{ (backup_jobs | selectattr('name','equalto','%i') | list | first).schedule }}:00
-RandomizedDelaySec=300
+# ежедневный запуск по умолчанию
+OnCalendar={{ backup_timer_oncalendar | default("*-*-* 02:30:00") }}
 Persistent=true
+RandomizedDelaySec={{ backup_timer_randomized_delay | default("900s") }}
 
 [Install]
 WantedBy=timers.target

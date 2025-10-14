@@ -39,17 +39,30 @@ server {
     location / {
         {% for net in ctx.allow_list %}allow {{ net }};{% endfor %}
         deny all;
+
         proxy_pass http://{{ ctx.backend }};
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header Host                $host;
+        proxy_set_header X-Real-IP           $remote_addr;
+        proxy_set_header X-Forwarded-For     $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto   $scheme;
+        {% if ctx.is_s3_console %}
+        # WebSocket is required for MinIO Console UI to list objects
+        proxy_set_header Upgrade             $http_upgrade;
+        proxy_set_header Connection          "upgrade";
+        {% endif %}
     }
     {% else %}
     location / {
         proxy_pass http://{{ ctx.backend }};
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header Host                $host;
+        proxy_set_header X-Real-IP           $remote_addr;
+        proxy_set_header X-Forwarded-For     $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto   $scheme;
+        {% if ctx.is_s3_console %}
+        # WebSocket is required for MinIO Console UI to list objects
+        proxy_set_header Upgrade             $http_upgrade;
+        proxy_set_header Connection          "upgrade";
+        {% endif %}
     }
     {% endif %}
 }

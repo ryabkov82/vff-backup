@@ -1,0 +1,24 @@
+# Пользователь MinIO и restic репо для SHM
+backup_minio_user: "shm-user"
+backup_restic_repository: >-
+  s3:{{ backup_minio_endpoint }}/{{ backup_bucket }}/shm/{{ inventory_hostname }}
+
+# Где лежит compose-проект SHM
+backup_compose_dir: /opt/shm
+
+# Джобы этого сервиса
+backup_jobs_map:
+  shm:
+    name: shm
+    compose_dir: /opt/shm
+    paths:
+      - '/var/backups/db'
+    containers: []
+    db_dump:
+      enabled: true
+      dump_dir: /var/backups/db
+      container: mysql
+      command: >
+        MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" mysqldump -u root
+        --single-transaction --routines --triggers --events --hex-blob --quick
+        --databases shm | gzip -c > /var/backups/db/shm_$(date +%F_%H%M%S).sql.gz

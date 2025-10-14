@@ -1,0 +1,40 @@
+- name: Build backup_jobs from backup_jobs_map
+  ansible.builtin.set_fact:
+    backup_jobs: >-
+      {{
+        (backup_jobs | default([])) +
+        (
+          (backup_jobs_map | default({}))
+          | dict2items
+          | map(attribute='value')
+          | list
+        )
+      }}
+  when: (backup_jobs_map | default({})) is mapping
+
+- name: Ensure deps
+  ansible.builtin.package:
+    name:
+      - ca-certificates
+      - jq
+      - bash
+      - restic
+    state: present
+
+- name: Ensure textfile dirs exist
+  when: backup_enable_metrics | bool
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ backup_node_exporter_textfile_dirs | default([]) }}"
+
+- name: Ensure restic cache dir exists
+  ansible.builtin.file:
+    path: /var/cache/restic
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
