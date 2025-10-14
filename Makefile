@@ -12,7 +12,7 @@ PLAY_SITE    ?= ansible/playbooks/site.yml
 # Доп. флаги для ansible/ansible-playbook (например: --ask-vault-pass)
 ANSIBLE_FLAGS?=
 # Ограничение по хосту/группе (например: LIMIT=monitoring-hub или LIMIT=hub)
-LIMIT        ?=
+LIMIT 		 ?= all
 
 # Вспомогательные флаги
 LIMIT_FLAG    = $(if $(strip $(LIMIT)),--limit $(LIMIT),)
@@ -88,3 +88,63 @@ backup-logs: ## Показать последние 100 строк журнал�
 	@#   make backup-logs LIMIT=ru-msk-1 BACKUP_JOB=shm
 	$(ANSIBLE_ADHOC) -i $(INVENTORY) $(LIMIT) -b -m ansible.builtin.shell -a \
 		"journalctl -u backup@$(BACKUP_JOB).service -n 100 --no-pager" $(ANSIBLE_FLAGS)
+
+
+# ===== Restore (restic) — defaults =====
+
+# Роль/плейбук восстановления
+PLAY_RESTORE   ?= ansible/playbooks/restore.yml
+
+# --------- Параметры по умолчанию (можно переопределять в команде make) ---------
+SERVICE         ?= marzban
+SRC_HOST        ?= $(LIMIT)                  # по умолчанию совпадает с --limit
+S3_ENDPOINT     ?= https://s3.vpn-for-friends.com
+S3_BUCKET       ?= vff-backups
+S3_REGION       ?= us-east-1
+MINIO_USER      ?= $(SERVICE)-user
+
+INSTALL_RESTIC  ?= 1
+INSTALL_FUSE    ?= 0
+PERFORM_RESTORE ?= 0
+
+RESTORE_TARGET  ?=
+RESTORE_FORCE   ?= 0
+
+# Пример: RESTORE_INCLUDES='/var/lib/marzban/**,/opt/marzban/.env'
+# Пример: RESTORE_EXCLUDES='/var/lib/marzban/xray-core/**'
+RESTORE_INCLUDES ?=
+RESTORE_EXCLUDES ?=
+
+# ===== Цель: restore-env-play =====
+.PHONY: restore-env-play
+restore-env-play: ## Сгенерировать /etc/vff-backup/restic.env и (опц.) восстановить снапшот через роль restore
+	@# Примеры:
+	@#   make restore-env-play
+	@#   make restore-env-play LIMIT=ru-msk-1 SERVICE=marzban PERFORM_RESTORE=0
+	@#   make restore-env-play LIMIT=ru-msk-1 SERVICE=marzban PERFORM_RESTORE=1 RESTORE_INCLUDES='/var/lib/marzban/**,/opt/marzban/.env'
+	@#   make restore-env-play LIMIT=ru-msk-1 SERVICE=marzban PERFORM_RESTORE=1 ANSIBLE_FLAGS='-e snapshot_id=abcd1234'
+	@#   make restore-env-play LIMIT=ru-msk-1 SERVICE=marzban PERFORM_RESTORE=1 RESTORE_TARGET=/srv/restore/marzban RESTORE_FORCE=1 RESTORE_INCLUDES='/var/lib/marzban/**'
+	@#   make restore-env-play LIMIT=ru-msk-1 SERVICE=marzban PERFORM_RESTORE=1 RESTORE_INCLUDES='/var/lib/marzban/**' RESTORE_EXCLUDES='/var/lib/marzban/xray-core/**'
+	@#   make restore-env-play LIMIT=ru-msk-1 SERVICE=marzban PERFORM_RESTORE=1 INSTALL_RESTIC=1 INSTALL_FUSE=1
+	@#   make restore-env-play LIMIT=ru-msk-1 SERVICE=shm SRC_HOST=nl-1.example PERFORM_RESTORE=1 RESTORE_INCLUDES='/var/lib/shm/**'
+	@#   make restore-env-play LIMIT=ru-msk-1 SERVICE=marzban PERFORM_RESTORE=1 S3_ENDPOINT=https://s3.alt.example S3_BUCKET=alt-bucket
+	$(ANSIBLE) -i $(INVENTORY) $(PLAY_RESTORE) $(LIMIT_FLAG) \
+		-e service="$(SERVICE)" \
+		-e src_host="$(SRC_HOST)" \
+		-e s3_endpoint="$(S3_ENDPOINT)" \
+		-e s3_bucket="$(S3_BUCKET)" \
+		-e s3_region="$(S3_REGION)" \
+		-e minio_user="$(MINIO_USER)" \
+		-e install_restic=$(INSTALL_RESTIC) \
+		-e install_fuse=$(INSTALL_FUSE) \
+		-e install_jq=1 \
+		-e perform_restore=$(PERFORM_RESTORE) \
+		-e restore_target='$(RESTORE_TARGET)' \
+		-e restore_includes="$$( if [ -n '$(strip $(RESTORE_INCLUDES))' ]; then \
+				printf '[\"%s\"]' '$(RESTORE_INCLUDES)' | sed 's/,/\",\"/g'; \
+			else printf '[]'; fi )" \
+		-e restore_excludes="$$( if [ -n '$(strip $(RESTORE_EXCLUDES))' ]; then \
+				printf '[\"%s\"]' '$(RESTORE_EXCLUDES)' | sed 's/,/\",\"/g'; \
+			else printf '[]'; fi )" \
+		-e restore_force=$(RESTORE_FORCE) \
+		$(ANSIBLE_FLAGS)

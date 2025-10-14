@@ -1,0 +1,32 @@
+---
+# Точка входа: валидируем секреты, ставим утилиты (по флагам), пишем env и (опц.) восстанавливаем
+
+- name: "Restore | Gather nothing"
+  ansible.builtin.debug:
+    msg: "Starting restore role for service={{ service }}, src_host={{ src_host }}"
+
+- name: "Restore | Read secrets on controller and set facts"
+  ansible.builtin.include_tasks: env.yml
+
+- name: "Restore | Optional installs"
+  ansible.builtin.include_tasks: install.yml
+
+- name: "Restore | Write /etc/vff-backup/restic.env"
+  no_log: true
+  ansible.builtin.template:
+    src: restic.env.j2
+    dest: /etc/vff-backup/restic.env
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: "Restore | Show env location (no secrets)"
+  ansible.builtin.debug:
+    msg:
+      - "Wrote /etc/vff-backup/restic.env"
+      - "RESTIC_REPOSITORY={{ restic_repository }}"
+      - "AWS_ACCESS_KEY_ID={{ minio_user }}"
+
+- name: "Restore | Perform restore (optional)"
+  when: perform_restore | bool
+  ansible.builtin.include_tasks: restore.yml

@@ -1,4 +1,3 @@
-
 # 🧰 VFF Backup
 
 **VFF Backup** — система централизованных резервных копий для инфраструктуры [VPN for Friends](https://vpn-for-friends.com).  
@@ -47,15 +46,18 @@ ansible/
 ├── playbooks/
 │   ├── nginx.yml              # Установка reverse-proxy
 │   ├── minio.yml              # Развёртывание MinIO
-│   └── backup.yml             # Установка backup-агента на узлах
+│   ├── backup.yml             # Установка backup-агента на узлах
+│   └── restore.yml            # Восстановление снапшота
 └── roles/
     ├── backup_nginx/          # Nginx + Let's Encrypt
     ├── minio/                 # MinIO + пользователи
-    └── backup/                # Роль бэкапов (restic, timers)
+    ├── backup/                # Роль бэкапов (restic, timers)
+    └── restore/               # Роль восстановления (restic restore)
 docs/
 ├── backup-nginx-role.md
 ├── minio-role.md
-└── backup-role.md
+├── backup-role.md
+└── restore-role.md
 Makefile
 ```
 
@@ -79,25 +81,48 @@ make backup LIMIT=ru-msk-1
 # Ручной запуск и просмотр логов бэкапа
 make backup-run  LIMIT=ru-msk-1 BACKUP_JOB=shm
 make backup-logs LIMIT=ru-msk-1 BACKUP_JOB=shm
+
+# Генерация restic.env и (опц.) восстановление снапшота
+make restore-env-play LIMIT=nl-ams-1 SERVICE=marzban PERFORM_RESTORE=0
+make restore-env-play LIMIT=nl-ams-1 SERVICE=marzban PERFORM_RESTORE=1 \
+  RESTORE_INCLUDES='/var/lib/marzban/**,/opt/marzban/.env'
+# Конкретный снапшот:
+make restore-env-play LIMIT=nl-ams-1 SERVICE=marzban PERFORM_RESTORE=1 \
+  ANSIBLE_FLAGS='-e snapshot_id=a54d7b64'
+# За пределы /tmp (нужен RESTORE_FORCE=1):
+make restore-env-play LIMIT=nl-ams-1 SERVICE=marzban PERFORM_RESTORE=1 \
+  RESTORE_TARGET=/srv/restore/marzban RESTORE_FORCE=1 \
+  RESTORE_INCLUDES='/var/lib/marzban/**'
 ```
 
 ---
 
 ## 🔐 Хранение секретов
 
-Все ключи и пароли хранятся в **Ansible Vault** (`ansible/group_vars/hub.vault.yml`).
+Большие секреты (root MinIO и т.д.) хранятся в **Ansible Vault** (`ansible/group_vars/hub.vault.yml`).  
+При этом пользователи S3 и пароли Restic для сервисов размещаются **на контроллере** во внешнем дереве `~/.ansible/secrets/`:
 
-Создание или редактирование:
+```
+~/.ansible/secrets/
+├── minio/
+│   ├── marzban-user
+│   └── shm-user
+└── restic/
+    ├── marzban
+    └── shm
+```
+
+Создание или редактирование vault-файла:
 ```bash
 EDITOR=nano ansible-vault edit ansible/group_vars/hub.vault.yml
 ```
 
-Пример содержимого:
+Пример содержимого vault:
 ```yaml
 vault_minio_root_user: vffadmin
 vault_minio_root_password: "StrongRootPass123!"
-vault_shm_user_secret: "..."
-vault_marzban_user_secret: "..."
+vault_shm_user_secret: "..."        # будет записан в ~/.ansible/secrets/minio/shm-user
+vault_marzban_user_secret: "..."    # будет записан в ~/.ansible/secrets/minio/marzban-user
 ```
 
 ---
@@ -109,6 +134,7 @@ vault_marzban_user_secret: "..."
 | **backup_nginx** | Nginx reverse-proxy с certbot для MinIO | [docs/backup-nginx-role.md](docs/backup-nginx-role.md) |
 | **minio** | Развёртывание S3-хранилища, политики и пользователи | [docs/minio-role.md](docs/minio-role.md) |
 | **backup** | Restic, systemd timers, очистка дампов, метрики | [docs/backup-role.md](docs/backup-role.md) |
+| **restore** | Восстановление снапшотов | [docs/restore-role.md](docs/restore-role.md) |
 
 ---
 

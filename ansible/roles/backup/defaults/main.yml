@@ -44,3 +44,8 @@ backup_jobs: []
 backup_dump_keep_count: 7
 # Если >0 и backup_dump_keep_count == 0 — удалять старше N дней
 backup_dump_keep_days: 0
+
+# Где лежат файлы-пароли для restic (по одному файлу на сервис)
+restic_secret_store: "{{ lookup('env', 'HOME') }}/.ansible/secrets/restic"
+restic_password_length: 48
+restic_password_chars: "ascii_letters,digits"

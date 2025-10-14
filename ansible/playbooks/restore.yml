@@ -1,0 +1,7 @@
+---
+- name: Generate restic env and optionally restore
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: restore
+      tags: restore

@@ -1,0 +1,105 @@
+---
+# Готовим restore_target, собираем флаги и запускаем восстановление последнего (или указанного) снапшота
+
+- name: "Restore | Build restore_target path if empty (mktemp)"
+  when: (restore_target | trim) == ""
+  ansible.builtin.command: bash -lc 'mktemp -d /tmp/restore-{{ service }}-XXXXXX'
+  register: mktemp_out
+  changed_when: true
+
+- name: "Restore | Set restore_target_effective"
+  ansible.builtin.set_fact:
+    restore_target_effective: >-
+      {{ (restore_target | trim) if (restore_target | trim) != '' else mktemp_out.stdout }}
+
+- name: "Restore | Safety check for restore_target (requires restore_force=true if non-/tmp)"
+  when:
+    - not restore_force | bool
+    - not (restore_target_effective | regex_search('^/tmp/'))
+  ansible.builtin.fail:
+    msg: >-
+      Refusing to restore to '{{ restore_target_effective }}' without restore_force=true.
+      Use /tmp by default or confirm with -e restore_force=true.
+
+- name: "Restore | Ensure restore target exists"
+  ansible.builtin.file:
+    path: "{{ restore_target_effective }}"
+    state: directory
+    mode: "0755"
+
+- name: Restore | Normalize include/exclude to lists
+  ansible.builtin.set_fact:
+    _includes: >-
+      {{ restore_includes if (restore_includes is sequence and restore_includes is not string)
+         else ((restore_includes | default('[]')) | from_yaml | default([], true)) }}
+    _excludes: >-
+      {{ restore_excludes if (restore_excludes is sequence and restore_excludes is not string)
+         else ((restore_excludes | default('[]')) | from_yaml | default([], true)) }}
+
+- name: Restore | Build include/exclude flags
+  ansible.builtin.set_fact:
+    restore_include_flags: "{{ _includes | map('regex_replace','^(.*)$','--include \"\\1\"') | join(' ') }}"
+    restore_exclude_flags: "{{ _excludes | map('regex_replace','^(.*)$','--exclude \"\\1\"') | join(' ') }}"
+
+- name: "Restore | Determine snapshot id"
+  vars:
+    jq_latest: '.[-1].short_id'
+  ansible.builtin.shell: |
+    set -euo pipefail
+    set -a; source /etc/vff-backup/restic.env; set +a
+    # Если передан конкретный snapshot_id — просто печатаем его
+    if [ -n "{{ snapshot_id | trim }}" ]; then
+      echo "{{ snapshot_id | trim }}"
+      exit 0
+    fi
+    # Иначе находим самый новый по tag/host (если указано)
+    if {{ snapshot_newest | bool | ternary('true','false') }}; then
+      snap=$(restic snapshots --json \
+        {{ ('--tag ' ~ snapshot_tag) if (snapshot_tag|trim) else '' }} \
+        {{ ('--host ' ~ snapshot_host) if (snapshot_host|trim) else '' }} \
+        | jq -r '{{ jq_latest }}')
+      if [ -z "$snap" ] || [ "$snap" = "null" ]; then
+        # fallback без host
+        snap=$(restic snapshots --json \
+          {{ ('--tag ' ~ snapshot_tag) if (snapshot_tag|trim) else '' }} \
+          | jq -r '{{ jq_latest }}')
+      fi
+      if [ -z "$snap" ] || [ "$snap" = "null" ]; then
+        echo "NO_SNAPSHOT" ; exit 0
+      fi
+      echo "$snap"
+    else
+      echo "NO_SNAPSHOT"
+    fi
+  args:
+    executable: /bin/bash
+  register: snap_out
+  changed_when: false
+
+- name: "Restore | Fail if no snapshot found"
+  when: snap_out.stdout | trim == "NO_SNAPSHOT"
+  ansible.builtin.fail:
+    msg: >-
+      No snapshots found for tag='{{ snapshot_tag }}' host='{{ snapshot_host }}'.
+      Pass -e snapshot_id=<id> or check backup presence.
+
+- name: "Restore | Run restic restore"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    set -a; source /etc/vff-backup/restic.env; set +a
+    snap="{{ snap_out.stdout | trim }}"
+    echo "Restoring snapshot $snap to {{ restore_target_effective }}"
+    # shellcheck disable=SC2086
+    restic restore "$snap" --target "{{ restore_target_effective }}" {{ restore_include_flags }} {{ restore_exclude_flags }}
+  args:
+    executable: /bin/bash
+  register: restore_cmd
+  changed_when: true
+
+- name: "Restore | Show restore summary"
+  ansible.builtin.debug:
+    msg:
+      - "Restore finished to: {{ restore_target_effective }}"
+      - "Snapshot: {{ snap_out.stdout | trim }}"
+      - "Includes: {{ restore_includes | default([]) }}"
+      - "Excludes: {{ restore_excludes | default([]) }}"
