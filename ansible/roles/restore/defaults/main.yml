@@ -1,0 +1,33 @@
+# === Интерфейс роли (значения по умолчанию) ===
+
+# Базовые параметры
+service: "marzban"                 # marzban | shm | ...
+src_host: "{{ inventory_hostname }}"
+s3_endpoint: "https://s3.vpn-for-friends.com"
+s3_bucket: "vff-backups"
+s3_region: "us-east-1"
+minio_user: "{{ service }}-user"
+restic_cache_dir: "/var/cache/restic"
+
+# Путь репозитория restic
+restic_repository: "s3:{{ s3_endpoint }}/{{ s3_bucket }}/{{ service }}/{{ src_host }}"
+
+# Установка утилит
+install_restic: true
+install_fuse: false        # для restic mount (необязательно)
+install_jq: true           # нужен для парсинга JSON снапшотов
+
+# Где искать секреты на контроллере (локально)
+restic_pass_file: "{{ lookup('env', 'HOME') }}/.ansible/secrets/restic/{{ service }}"
+minio_secret_file: "{{ lookup('env', 'HOME') }}/.ansible/secrets/minio/{{ minio_user }}"
+
+# Восстановление (опционально)
+perform_restore: false
+restore_target: ""         # если пусто — будет mktemp в /tmp
+restore_includes: []       # пример: ['/var/lib/marzban/**','/opt/marzban/.env']
+restore_excludes: []       # пример: ['/var/lib/marzban/xray-core/**']
+restore_force: false       # подтверждение, если restore_target не под /tmp
+snapshot_id: ""            # необязательно; если не пусто — используем конкретный снапшот
+snapshot_newest: true      # брать самый новый, если snapshot_id не задан
+snapshot_tag: "{{ service }}"
+snapshot_host: "{{ src_host }}"

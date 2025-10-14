@@ -1,6 +1,7 @@
 backup_minio_user: "marzban-user"
+service: marzban
 backup_restic_repository: >-
-  s3:{{ backup_minio_endpoint }}/{{ backup_bucket }}/marzban/{{ inventory_hostname }}
+  s3:{{ backup_minio_endpoint }}/{{ backup_bucket }}/{{ service }}/{{ inventory_hostname }}
 
 backup_compose_dir: /opt/marzban
 
@@ -12,7 +13,7 @@ backup_jobs_map:
       - "/var/lib/marzban"
       - "/opt/marzban"
     exclude_paths:
-      - "/var/lib/marzban/xray-core"
+      - "/var/lib/marzban/xray-core/**"
     containers: []
     db_dump:
       enabled: false

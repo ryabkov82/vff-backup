@@ -1,7 +1,8 @@
 # Пользователь MinIO и restic репо для SHM
 backup_minio_user: "shm-user"
+service: shm
 backup_restic_repository: >-
-  s3:{{ backup_minio_endpoint }}/{{ backup_bucket }}/shm/{{ inventory_hostname }}
+  s3:{{ backup_minio_endpoint }}/{{ backup_bucket }}/{{ service }}/{{ inventory_hostname }}
 
 # Где лежит compose-проект SHM
 backup_compose_dir: /opt/shm
