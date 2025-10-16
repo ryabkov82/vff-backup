@@ -15,7 +15,7 @@ backup_enable_metrics: true
 
 # Куда писать метрики (используется только если backup_enable_metrics=true)
 backup_node_exporter_textfile_dirs:
-  - /var/lib/node_exporter/textfile_collector
+  - /var/lib/node_exporter/textfile
 
 # Расписание таймеров (глобально для всех джобов этой роли)
 backup_timer_oncalendar: "*-*-* 02:30:00"

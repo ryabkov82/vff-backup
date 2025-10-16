@@ -41,10 +41,10 @@ write_metrics() {
   for d in "${TEXTDIRS[@]}"; do
     f="$d/$METRIC_FILE"
     {
-      echo "backup_last_run_timestamp_seconds{job=\"${JOB}\"} ${now}"
-      echo "backup_last_duration_seconds{job=\"${JOB}\"} $((now-start_ts))"
-      echo "backup_last_status{job=\"${JOB}\"} ${status}"
-      [[ ${_size} -gt 0 ]] && echo "backup_last_size_bytes{job=\"${JOB}\"} ${_size}"
+      echo "backup_last_run_timestamp_seconds{backup_job=\"${JOB}\"} ${now}"
+      echo "backup_last_duration_seconds{backup_job=\"${JOB}\"} $((now-start_ts))"
+      echo "backup_last_status{backup_job=\"${JOB}\"} ${status}"
+      [[ ${_size} -gt 0 ]] && echo "backup_last_size_bytes{backup_job=\"${JOB}\"} ${_size}"
     } > "$f.tmp" && mv "$f.tmp" "$f"
   done
 }

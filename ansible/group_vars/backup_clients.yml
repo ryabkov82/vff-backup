@@ -4,7 +4,11 @@ backup_bucket: "vff-backups"
 backup_s3_region: "us-east-1"
 
 backup_node_exporter_textfile_dirs:
-  - /var/lib/node_exporter/textfile_collector
+  - /var/lib/node_exporter/textfile
+
+# Пользователь/группа под которыми крутится node_exporter (для прав на каталог/файлы)
+node_exporter_user: node_exporter
+node_exporter_group: node_exporter
 
 backup_timer_oncalendar: "*-*-* 03:15:00"
 backup_timer_randomized_delay: "600s"
