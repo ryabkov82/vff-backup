@@ -21,15 +21,15 @@
       - restic
     state: present
 
-- name: Ensure textfile dirs exist
+- name: Ensure textfile dirs exist (readable by node_exporter)
   when: backup_enable_metrics | bool
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
-    owner: root
-    group: root
+    owner: "{{ node_exporter_user }}"
+    group: "{{ node_exporter_group }}"
     mode: "0755"
-  loop: "{{ backup_node_exporter_textfile_dirs | default([]) }}"
+  loop: "{{ backup_node_exporter_textfile_dirs | default([node_exporter_textfile_dir | default('/var/lib/node_exporter/textfile')]) }}"
 
 - name: Ensure restic cache dir exists
   ansible.builtin.file:
