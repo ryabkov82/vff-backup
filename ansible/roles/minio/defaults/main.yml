@@ -24,6 +24,7 @@ minio_bucket: "vff-backups"
 minio_users:
   - { name: "shm-user", prefix: "shm/" }
   - { name: "marzban-user", prefix: "marzban/" }
+  - { name: "remnawave-user", prefix: "remnawave/" }
 
 # где хранить сгенерённые ключи (на контроллере Ansible)
 minio_secret_store: "{{ lookup('env', 'HOME') }}/.ansible/secrets/minio"

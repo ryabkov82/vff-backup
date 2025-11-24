@@ -8,7 +8,7 @@
 ## 📦 Архитектура
 
 ```
-[Marzban, SHM]
+[Marzban, SHM, Remnawave]
    │
    │ Restic → S3
    ▼
@@ -41,6 +41,7 @@ ansible/
 │   ├── backup_clients.yml     # Настройки клиентов (шаблон)
 │   ├── shm.yml                # Настройки бэкапа SHM
 │   ├── marzban.yml            # Настройки бэкапа Marzban
+│   ├── remnawave.yml          # Настройки бэкапа Remnawave
 │   └── hub.vault.yml          # Секреты (MinIO root / user secrets)
 ├── hosts.ini                  # Инвентарь (hub, vpn, ...)
 ├── playbooks/
@@ -99,7 +100,7 @@ make restore-env-play LIMIT=nl-ams-1 SERVICE=marzban PERFORM_RESTORE=1 \
 
 ## 🔐 Хранение секретов
 
-Большие секреты (root MinIO и т.д.) хранятся в **Ansible Vault** (`ansible/group_vars/hub.vault.yml`).  
+Большие секреты (root MinIO и т.д.) хранятся в **Ansible Vault** (`ansible/group_vars/hub/vault.yml`).  
 При этом пользователи S3 и пароли Restic для сервисов размещаются **на контроллере** во внешнем дереве `~/.ansible/secrets/`:
 
 ```
@@ -109,12 +110,13 @@ make restore-env-play LIMIT=nl-ams-1 SERVICE=marzban PERFORM_RESTORE=1 \
 │   └── shm-user
 └── restic/
     ├── marzban
+    ├── remnawave
     └── shm
 ```
 
 Создание или редактирование vault-файла:
 ```bash
-EDITOR=nano ansible-vault edit ansible/group_vars/hub.vault.yml
+EDITOR=nano ansible-vault edit ansible/group_vars/hub/vault.yml
 ```
 
 Пример содержимого vault:
