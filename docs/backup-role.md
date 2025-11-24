@@ -8,8 +8,7 @@
 
 ## 🧩 Назначение
 
-Роль отвечает за **создание, ротацию и мониторинг бэкапов** сервисов `shm` и `marzban`
-в проекте `vff-backup`.
+Роль отвечает за **создание, ротацию и мониторинг бэкапов** сервисов `shm`, `marzban` и `remnawave` в проекте `vff-backup`.
 
 Каждый узел получает собственный systemd-сервис и таймер (`backup@<job>.service/.timer`),
 которые регулярно выполняют резервное копирование данных и/или дампы БД
@@ -89,6 +88,27 @@ backup_jobs_map:
     containers: []
     db_dump:
       enabled: false
+```
+
+Пример для `remnawave` (PostgreSQL + конфиги docker-compose):
+
+```yaml
+backup_jobs_map:
+  remnawave:
+    name: remnawave
+    compose_dir: /opt/remnawave
+    paths:
+      - "/var/backups/db"
+      - "/opt/remnawave/.env"
+      - "/opt/remnawave/docker-compose.yml"
+    containers: []
+    db_dump:
+      enabled: true
+      dump_dir: /var/backups/db
+      container: remnawave-db
+      command: >
+        PGPASSWORD="${POSTGRES_PASSWORD}" pg_dumpall --clean --if-exists -U "${POSTGRES_USER:-postgres}" |
+        gzip -c > /var/backups/db/remnawave_$(date +%F_%H%M%S).sql.gz
 ```
 
 ---

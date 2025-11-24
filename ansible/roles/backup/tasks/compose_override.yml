@@ -1,4 +1,4 @@
-# Если вообще нет джобов с db_dump.container — пропускаем весь блок
+# Определяем все джобы, которые требуют override (db_dump.container)
 - name: Select jobs requiring compose override
   ansible.builtin.set_fact:
     backup_jobs_needing_override: >-
@@ -10,81 +10,52 @@
          | list }}
   when: backup_jobs is defined
 
+# Если джобов нет — завершаем
 - name: Skip compose override when nothing to render
   ansible.builtin.meta: noop
   when: (backup_jobs_needing_override | default([])) | length == 0
 
-# Проверка наличия docker-compose.yml (per-job compose_dir или общий)
-- name: Check compose dir per job
+
+# Проверяем наличие docker-compose.yml для единственного compose_dir
+- name: Determine compose_dir
+  ansible.builtin.set_fact:
+    backup_compose_dir_resolved: "{{ backup_compose_dir }}"
+
+- name: Check docker-compose.yml exists
   ansible.builtin.stat:
-    path: "{{ (item.compose_dir | default(backup_compose_dir)) }}/docker-compose.yml"
-  register: compose_stat
-  loop: "{{ backup_jobs_needing_override }}"
-  loop_control:
-    label: "{{ item.name }}"
+    path: "{{ backup_compose_dir_resolved }}/docker-compose.yml"
+  register: compose_yml_stat
 
-# Падаем по каждому отсутствующему compose-файлу
-- name: Fail if compose file missing for a job
+- name: Fail if main compose file is missing
   ansible.builtin.fail:
-    msg: >-
-      docker-compose.yml not found at
-      {{ (item.item.compose_dir | default(backup_compose_dir)) }}
-      for job {{ item.item.name }}
-  when: not item.stat.exists
-  loop: "{{ compose_stat.results }}"
-  loop_control:
-    label: "{{ item.item.name }}"
+    msg: >
+      docker-compose.yml not found at {{ backup_compose_dir_resolved }}
+  when: not compose_yml_stat.stat.exists
 
-# Рендер override (по одному файлу на джоб)
-- name: Render docker-compose override for db_dump.container
+# Рендерим ЕДИНСТВЕННЫЙ override-файл
+# docker-compose.override.yml (стандартное имя)
+- name: Render unified docker-compose.override.yml
   vars:
-    job_name: "{{ item.name }}"
-    db_container: "{{ item.db_dump.container }}"
-    dump_dir: "{{ item.db_dump.dump_dir | default(backup_db_dump_dir) }}"
-    compose_dir: "{{ item.compose_dir | default(backup_compose_dir) }}"
+    # Это либо один контейнер, либо список контейнеров
+    db_containers: "{{ backup_jobs_needing_override
+                       | map(attribute='db_dump.container')
+                       | list }}"
+    dump_dirs: "{{ backup_jobs_needing_override
+                   | map(attribute='db_dump.dump_dir')
+                   | list }}"
   ansible.builtin.template:
     src: "docker-compose.override.backup.yml.j2"
-    dest: "{{ compose_dir }}/docker-compose.override.backup-{{ job_name }}.yml"
+    dest: "{{ backup_compose_dir_resolved }}/docker-compose.override.yml"
     owner: root
     group: root
     mode: "0644"
-  loop: "{{ backup_jobs_needing_override }}"
-  register: compose_override_results
 
-# Сбор всех override-файлов в конкретном compose_dir и up -d (per compose_dir)
-- name: Build list of compose_dirs used by overrides
-  ansible.builtin.set_fact:
-    override_compose_dirs: >-
-      {{
-        (compose_override_results.results
-          | map(attribute='invocation')
-          | map(attribute='module_args')
-          | map(attribute='dest')
-          | map('dirname')
-          | list
-        )
-        | unique
-      }}
-
-- name: Find overrides per compose_dir
-  ansible.builtin.find:
-    paths: "{{ item }}"
-    patterns: "docker-compose.override.backup-*.yml"
-    file_type: file
-  loop: "{{ override_compose_dirs }}"
-  register: found_overrides
-
-- name: Bring up services with overrides (docker compose up -d)
+# Просто запускаем docker compose up -d (override подхватится автоматом)
+- name: Bring up services with unified override (docker compose up -d)
   community.docker.docker_compose_v2:
-    project_src: "{{ item.item }}"
-    files: >-
-      {{
-        [ item.item ~ '/docker-compose.yml' ] +
-        (item.files | map(attribute='path') | list)
-      }}
+    project_src: "{{ backup_compose_dir_resolved }}"
     state: present
     build: never
     pull: policy
     services: []
     remove_orphans: true
-  loop: "{{ found_overrides.results }}"

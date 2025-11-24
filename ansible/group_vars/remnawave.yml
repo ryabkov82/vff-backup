@@ -1,0 +1,23 @@
+backup_minio_user: "remnawave-user"
+service: remnawave
+backup_restic_repository: >-
+  s3:{{ backup_minio_endpoint }}/{{ backup_bucket }}/{{ service }}/{{ inventory_hostname }}
+
+backup_compose_dir: /opt/remnawave
+
+backup_jobs_map:
+  remnawave:
+    name: remnawave
+    compose_dir: /opt/remnawave
+    paths:
+      - "/var/backups/db"
+      - "/opt/remnawave/.env"
+      - "/opt/remnawave/docker-compose.yml"
+    containers: []
+    db_dump:
+      enabled: true
+      dump_dir: /var/backups/db
+      container: remnawave-db
+      command: >
+        PGPASSWORD="${POSTGRES_PASSWORD}" pg_dumpall --clean --if-exists -U "${POSTGRES_USER:-postgres}" |
+        gzip -c > /var/backups/db/remnawave_$(date +%F_%H%M%S).sql.gz
