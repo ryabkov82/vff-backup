@@ -20,4 +20,4 @@ backup_jobs_map:
       container: remnawave-db
       command: >
         PGPASSWORD="${POSTGRES_PASSWORD}" pg_dumpall --clean --if-exists -U "${POSTGRES_USER:-postgres}" |
-        gzip -c > /var/backups/db/remnawave_$(date +%F_%H%M%S).sql.gz
+        gzip -c > "$DUMP_OUT"

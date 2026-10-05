@@ -69,17 +69,27 @@
 
 ## 📦 Секреты (на контроллере)
 
+Учётные данные для DR читаются на Ansible-контроллере. В git и в вывод playbook их значения не попадают.
+
+- `~/.ansible/secrets/restic/<service>` — пароль репозитория Restic;
+- `~/.ansible/secrets/minio/<minio-user>` — секрет пользователя MinIO.
+
 ```
 ~/.ansible/secrets/
 ├── minio/
 │   ├── marzban-user
+│   ├── remnawave-user
 │   └── shm-user
 └── restic/
     ├── marzban
+    ├── remnawave
     └── shm
 ```
 
 Если файл отсутствует — lookup `password` **создаст** его с заданной длиной и алфавитом (в роли `backup`).
+
+Snapshot SHM для DR содержит SQL-дамп в `/var/backups/db` и каталог `/opt/shm`.
+Новый snapshot не считается успешным, если при `db_dump.enabled: true` свежий дамп в этом запуске не был создан и не прошёл `gzip -t`: `restic backup` в таком случае не стартует.
 
 ---
 

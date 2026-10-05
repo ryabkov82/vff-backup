@@ -44,13 +44,47 @@ write_metrics() {
       echo "backup_last_run_timestamp_seconds{backup_job=\"${JOB}\"} ${now}"
       echo "backup_last_duration_seconds{backup_job=\"${JOB}\"} $((now-start_ts))"
       echo "backup_last_status{backup_job=\"${JOB}\"} ${status}"
-      [[ ${_size} -gt 0 ]] && echo "backup_last_size_bytes{backup_job=\"${JOB}\"} ${_size}"
+      # if/fi, не `[[ ]] && echo`: иначе при size=0 группа завершается с 1
+      # и mv не публикует файл метрик (failed dump как раз имеет size 0).
+      if [[ ${_size} -gt 0 ]]; then
+        echo "backup_last_size_bytes{backup_job=\"${JOB}\"} ${_size}"
+      fi
     } > "$f.tmp" && mv "$f.tmp" "$f"
   done
 }
 
-trap 'status=1; write_metrics' ERR
-trap 'status=0; write_metrics' EXIT
+# Единственная запись метрик — по фактическому коду выхода.
+# ERR trap раньше выставлял status=1, а EXIT безусловно возвращал 0.
+on_exit() {
+  original_rc=$?
+  trap - EXIT
+  cleanup_failed=0
+  # Одна попытка unpause на каждый контейнер, который этот run поставил на pause.
+  # Ошибка одного unpause не прерывает остальные и не превращает failed job в success.
+  if [[ "${paused_count:-0}" -gt 0 ]]; then
+    for c in "${paused_containers[@]}"; do
+      if ! docker unpause "$c"; then
+        echo "[ERROR] failed to unpause container '$c'" >&2
+        cleanup_failed=1
+      fi
+    done
+    paused_count=0
+  fi
+  rc=$original_rc
+  if [[ "$rc" -eq 0 && "$cleanup_failed" -ne 0 ]]; then
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    status=0
+  else
+    status=1
+  fi
+  write_metrics || true
+  exit "$rc"
+}
+paused_count=0
+paused_containers=()
+trap on_exit EXIT
 
 # embed jobs JSON (через heredoc, без read -d '')
 JOBS_JSON=$(cat <<'EOF'
@@ -87,29 +121,125 @@ if [[ -n "$EXCLUDES" ]]; then
   done
 fi
 
-# optional dump
-if [[ "$DUMP_ENABLED" == "true" && -n "$DUMP_COMMAND" ]]; then
-  mkdir -p "$DUMP_DIR" || true
-  if [[ -n "$DUMP_CONTAINER" ]]; then
-    # если задан каталог проекта — зайдём в него
-    if [[ -n "$COMPOSE_DIR" ]]; then cd "$COMPOSE_DIR"; fi
-    # exec только если сервис действительно есть
-    if docker compose ps --services | grep -qx "$DUMP_CONTAINER"; then
-      docker compose exec -T "$DUMP_CONTAINER" bash -lc "$DUMP_COMMAND"
-    else
-      echo "[WARN] compose service '$DUMP_CONTAINER' not found; skipping db_dump" >&2
-    fi
-  else
-    bash -lc "$DUMP_COMMAND"
-  fi
-fi
-
-# cleanup old DB dumps in dump_dir (before restic backup)
+# cleanup old DB dumps in dump_dir (after a successful dump, before restic backup)
 # keep N newest by count, or by days if count==0 and days>0
 CLEAN_KEEP_COUNT={{ backup_dump_keep_count | default(7) | int }}
 CLEAN_KEEP_DAYS={{ backup_dump_keep_days  | default(0) | int }}
 
 {% raw %}
+fail() {
+  echo "[ERROR] $*" >&2
+  exit 1
+}
+
+declare -A DUMP_BEFORE_PATHS=()
+
+record_existing_dumps() {
+  shopt -s nullglob
+  local f
+  for f in "$DUMP_DIR"/*.sql.gz; do
+    DUMP_BEFORE_PATHS["$f"]=1
+  done
+  shopt -u nullglob
+}
+
+# Имя ещё не существует: команда создаёт файл, а не открывает старый pathname.
+allocate_dump_out() {
+  local stamp attempt candidate
+  attempt=0
+  while [[ "$attempt" -lt 100 ]]; do
+    stamp=$(date +%F_%H%M%S_%N)
+    candidate="$DUMP_DIR/${JOB}_${stamp}_$$_${RANDOM}.sql.gz"
+    if [[ ! -e "$candidate" ]]; then
+      DUMP_OUT=$candidate
+      return 0
+    fi
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+# Удаляет только файлы, появившиеся в этом запуске. Ранее снятые дампы не трогает.
+remove_new_dumps() {
+  shopt -s nullglob
+  local f
+  for f in "$DUMP_DIR"/*.sql.gz; do
+    if [[ -z "${DUMP_BEFORE_PATHS[$f]+x}" ]]; then
+      rm -f -- "$f"
+    fi
+  done
+  shopt -u nullglob
+}
+
+# Обязательный дамп: без нового валидного файла restic не запускается.
+if [[ "$DUMP_ENABLED" == "true" ]]; then
+  [[ -n "$DUMP_DIR" ]] || fail "db_dump is enabled but dump_dir is empty"
+  [[ -n "$DUMP_COMMAND" ]] || fail "db_dump is enabled but command is empty"
+  mkdir -p "$DUMP_DIR"
+
+  if [[ -n "$COMPOSE_DIR" && ! -d "$COMPOSE_DIR" ]]; then
+    fail "compose directory '$COMPOSE_DIR' does not exist"
+  fi
+
+  if [[ -n "$DUMP_CONTAINER" ]]; then
+    [[ -n "$COMPOSE_DIR" ]] || fail "db_dump container '$DUMP_CONTAINER' is set but compose_dir is empty"
+    cd "$COMPOSE_DIR"
+    if ! services=$(docker compose ps --services); then
+      fail "failed to list compose services in '$COMPOSE_DIR'"
+    fi
+    if ! printf '%s\n' "$services" | grep -qx "$DUMP_CONTAINER"; then
+      fail "compose service '$DUMP_CONTAINER' not found; db_dump is required"
+    fi
+  fi
+
+  # noclobber: `>` в DUMP_COMMAND не может затереть уже существующий файл.
+  allocate_dump_out || fail "could not allocate a unique dump path in '$DUMP_DIR'"
+  quoted_out=$(printf '%q' "$DUMP_OUT")
+  dump_shell="set -o pipefail; set -o noclobber; DUMP_OUT=$quoted_out; $DUMP_COMMAND"
+  if [[ -n "$DUMP_CONTAINER" ]]; then
+    dump_runner=(docker compose exec -T "$DUMP_CONTAINER" bash -lc "$dump_shell")
+  else
+    dump_runner=(bash -lc "$dump_shell")
+  fi
+
+  record_existing_dumps
+  set +e
+  "${dump_runner[@]}"
+  dump_rc=$?
+  set -e
+  if [[ "$dump_rc" -ne 0 ]]; then
+    remove_new_dumps
+    fail "db dump command failed (rc=$dump_rc)"
+  fi
+
+  new_files=()
+  shopt -s nullglob
+  for f in "$DUMP_DIR"/*.sql.gz; do
+    if [[ -z "${DUMP_BEFORE_PATHS[$f]+x}" ]]; then
+      new_files+=("$f")
+    fi
+  done
+  shopt -u nullglob
+
+  if [[ ${#new_files[@]} -eq 0 ]]; then
+    fail "db dump finished but no new *.sql.gz was created in '$DUMP_DIR'"
+  fi
+
+  for f in "${new_files[@]}"; do
+    sz=$(stat -c '%s' "$f")
+    if [[ "$sz" -eq 0 ]]; then
+      echo "[ERROR] new db dump is empty: $f" >&2
+      remove_new_dumps
+      exit 1
+    fi
+    if ! gzip -t "$f"; then
+      echo "[ERROR] gzip -t failed for new db dump: $f" >&2
+      remove_new_dumps
+      exit 1
+    fi
+  done
+fi
+
 if [[ -n "$DUMP_DIR" ]]; then
   if [[ $CLEAN_KEEP_COUNT -gt 0 ]]; then
     shopt -s nullglob
@@ -127,20 +257,29 @@ if [[ -n "$DUMP_DIR" ]]; then
 fi
 {% endraw %}
 
-# pause containers if set
+# pause containers if set. Unpause делает только EXIT trap.
 if [[ -n "$PAUSE_CONTAINERS" ]]; then
   eval "set -- $PAUSE_CONTAINERS"
-  for c in "$@"; do docker pause "$c" || true; done
+  for c in "$@"; do
+    if docker pause "$c"; then
+      paused_containers+=("$c")
+      paused_count=$((paused_count + 1))
+    fi
+  done
 fi
 
-# backup
-if out=$(eval "restic backup --one-file-system --json --tag \"$JOB\" $RESTIC_EXCLUDES $(eval echo $PATHS)"); then
-  size=$(echo "$out" | jq -r 'select(.message_type=="summary") | (.data_added // .total_bytes_processed // 0)')
-else
-  status=1
+# backup запускается только если обязательный dump выше не завершил job
+set +e
+out=$(eval "restic backup --one-file-system --json --tag \"$JOB\" $RESTIC_EXCLUDES $(eval echo $PATHS)")
+backup_rc=$?
+set -e
+if [[ $backup_rc -ne 0 ]]; then
+  echo "[ERROR] restic backup failed (rc=$backup_rc)" >&2
+  exit 1
 fi
+size=$(echo "$out" | jq -r 'select(.message_type=="summary") | (.data_added // .total_bytes_processed // 0)')
 
-# retention
+# retention — прежняя политика, только после успешного snapshot
 set +e
 restic forget --json \
   --keep-last {{ backup_forget_policy.keep_last }} \
@@ -148,12 +287,9 @@ restic forget --json \
   --keep-weekly {{ backup_forget_policy.keep_weekly }} \
   --keep-monthly {{ backup_forget_policy.keep_monthly }} \
   --prune >/dev/null
-rc=$?
+forget_rc=$?
 set -e
-if [[ $rc -ne 0 ]]; then status=1; fi
-
-# unpause
-if [[ -n "$PAUSE_CONTAINERS" ]]; then
-  eval "set -- $PAUSE_CONTAINERS"
-  for c in "$@"; do docker unpause "$c" || true; done
+if [[ $forget_rc -ne 0 ]]; then
+  echo "[ERROR] restic forget failed (rc=$forget_rc)" >&2
+  exit 1
 fi

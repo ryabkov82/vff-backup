@@ -63,6 +63,7 @@ backup_jobs_map:
     compose_dir: /opt/shm
     paths:
       - /var/backups/db
+      - /opt/shm
     containers: []
     db_dump:
       enabled: true
@@ -71,7 +72,7 @@ backup_jobs_map:
       command: >
         /bin/bash -lc 'MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" mysqldump -u root
         --single-transaction --routines --triggers --events --hex-blob --quick
-        --databases shm | gzip -c > /var/backups/db/shm_$(date +%F_%H%M%S).sql.gz'
+        --databases shm | gzip -c > "$DUMP_OUT"'
 ```
 
 Пример для `marzban`:
@@ -108,7 +109,7 @@ backup_jobs_map:
       container: remnawave-db
       command: >
         PGPASSWORD="${POSTGRES_PASSWORD}" pg_dumpall --clean --if-exists -U "${POSTGRES_USER:-postgres}" |
-        gzip -c > /var/backups/db/remnawave_$(date +%F_%H%M%S).sql.gz
+        gzip -c > "$DUMP_OUT"
 ```
 
 ---
@@ -137,11 +138,13 @@ backup_timer_randomized_delay: "600s"
 Если `backup_enable_metrics: true`, в каталоге `textfile_collector` создаются метрики:
 
 ```
-backup_last_run_timestamp_seconds{job="shm"} 1739491210
-backup_last_duration_seconds{job="shm"} 5
-backup_last_status{job="shm"} 0
-backup_last_size_bytes{job="shm"} 246751
+backup_last_run_timestamp_seconds{backup_job="shm"} 1739491210
+backup_last_duration_seconds{backup_job="shm"} 5
+backup_last_status{backup_job="shm"} 0
+backup_last_size_bytes{backup_job="shm"} 246751
 ```
+
+`backup_last_status` пишется **один раз** в `EXIT` trap по фактическому коду выхода процесса: `0` если job завершился успешно, `1` при любом ненулевом коде. Ошибка не перезаписывается последующим успешным trap. Тот же trap один раз снимает pause с контейнеров, которые в этом запуске удалось поставить на pause. Ошибка одного `unpause` не останавливает остальные. Если job уже был non-zero, cleanup не делает его успешным. Если job был успешен, но хотя бы один `unpause` не удался, итоговый код и `backup_last_status` становятся ошибочными.
 
 ---
 
@@ -192,8 +195,45 @@ restic restore "$SNAP" --target "$RESTORE_DIR"
 
 ## 🧹 Очистка старых дампов
 
-Перед каждым запуском `vff-backup.sh` автоматически удаляются старые SQL-дампы
-(по `backup_dump_keep_count` или `backup_dump_keep_days`).
+После **успешного** создания и проверки нового SQL-дампа `vff-backup.sh` оставляет
+последние файлы `*.sql.gz` в `dump_dir` (по `backup_dump_keep_count`, сейчас 7,
+или по `backup_dump_keep_days`, если count равен 0).
+
+Если новый дамп не создан или не прошёл проверку, локальная ротация **не**
+запускается: последний рабочий дамп не удаляется.
+
+## Обязательный дамп БД
+
+При `db_dump.enabled: true` новый дамп — предусловие `restic backup`.
+Job завершается с ненулевым кодом, метрика статуса становится `1`, а
+`restic backup` / `restic forget` не запускаются, если:
+
+- нет каталога `compose_dir`;
+- указанный DB service/container отсутствует или список сервисов compose получить нельзя;
+- команда дампа завершилась с ошибкой (внутри команды включён `pipefail`, поэтому сбой `mysqldump` / `pg_dump` не маскируется успешным `gzip`);
+- в **этом** запуске не появился новый `*.sql.gz` (изменение уже существовавшего файла не считается);
+- новый файл пустой (`size == 0`) или не проходит `gzip -t`.
+
+Перед командой скрипт выбирает ещё не существующий путь и передаёт его как `DUMP_OUT` (дата с наносекундами, PID и случайный суффикс). Команда дампа должна писать в `"$DUMP_OUT"`, а не в фиксированное имя. Оболочка команды запускается с `noclobber`: перенаправление `>` не открывает уже существующий файл на перезапись, поэтому неуспешный run не затирает прежний `*.sql.gz`.
+
+Наличие старого `*.sql.gz` само по себе backup успешным не делает.
+Неудачный файл, созданный текущим запуском, удаляется; файлы, которые уже были до запуска, error cleanup не изменяет и не удаляет.
+
+Политика `restic forget` (`keep_last` / `keep_daily` / `keep_weekly` / `keep_monthly`) не меняется и применяется только после успешного `restic backup`. Если backup завершился с ошибкой, `restic forget --prune` не запускается.
+
+## Состав DR-бэкапа SHM
+
+Snapshot SHM включает:
+
+- `/var/backups/db` — согласованный `mysqldump` базы `shm`;
+- `/opt/shm` целиком (`.env`, compose, `pay_systems`, `template-backups`, `mysql/conf.d` и любые новые локальные файлы).
+
+`/opt/shm/mysql` исключать не нужно. Это не datadir: на хосте там только
+`mysql/conf.d` (на `ru-msk-1` — `memory.cnf` с лимитами InnoDB), и compose
+монтирует его в `/etc/mysql/conf.d`. Файлы данных MySQL лежат в named volume
+`mysql-data` (`/var/lib/mysql`), вне `/opt/shm`; их консистентная копия — SQL-дамп.
+Named volume `shm-data` тоже вне `/opt/shm`. Платёжные интеграции примонтированы
+из `./pay_systems` и поэтому попадают в backup вместе с каталогом.
 
 ---
 
@@ -210,20 +250,20 @@ restic restore "$SNAP" --target "$RESTORE_DIR"
 ```
 vff-backups/
 ├── shm/<host>/
-└── marzban/<host>/
+├── marzban/<host>/
+└── remnawave/<host>/
 ```
 
 ---
 
 ## 🔐 Секреты
 
-Секреты `restic` и `minio` хранятся локально на контроллере Ansible:
-```
-~/.ansible/secrets/restic/
-~/.ansible/secrets/minio/
-```
+Секреты для backup и DR лежат только на контроллере Ansible, не в git и не на восстанавливаемом хосте:
 
-Роль автоматически создаёт недостающие пароли при первом запуске.
+- пароль репозитория Restic: `~/.ansible/secrets/restic/<service>` (`shm`, `remnawave`, `marzban`);
+- секрет пользователя MinIO: `~/.ansible/secrets/minio/<minio-user>` (`shm-user`, `remnawave-user`, `marzban-user`).
+
+Роль автоматически создаёт недостающие пароли при первом запуске. Значения секретов в репозиторий не записываются.
 
 ---
 
