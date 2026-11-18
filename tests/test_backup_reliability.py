@@ -512,6 +512,34 @@ class BackupScriptTests(unittest.TestCase):
         self.assertEqual(self._docker_calls(),[])
         self.assertEqual(list(stage.glob("generation-*")),[])
 
+    def test_prepared_verifier_rejects_tree_traversal_errors(self):
+        import hashlib
+        import runpy
+        from unittest.mock import patch
+
+        verify = runpy.run_path(str(ROOT / "ansible/roles/backup/files/verify_prepared_snapshot.py"))["verify"]
+        stage = self.root / "sealed"
+        stage.mkdir(mode=0o700)
+        payload = stage / "included"
+        payload.write_bytes(b"synthetic")
+        payload.chmod(0o600)
+        manifest = stage / ".vff-snapshot.json"
+        manifest.write_text(json.dumps({"version": 1, "files": {"included": hashlib.sha256(payload.read_bytes()).hexdigest()}}))
+        manifest.chmod(0o600)
+        self.assertEqual(verify(stage), 1)
+        nested = stage / "inaccessible"
+        nested.mkdir(mode=0o700)
+        original_scandir = os.scandir
+
+        def broken_scandir(path):
+            if Path(path) == nested:
+                raise PermissionError("synthetic traversal failure")
+            return original_scandir(path)
+
+        with patch("os.scandir", side_effect=broken_scandir):
+            with self.assertRaises(PermissionError):
+                verify(stage)
+
     def test_prepared_fail_closed(self):
         stage, verifier, job = self._prepared_job()
         render_backup_script(self.script,[job],self.metrics,self.env_file,verifier=str(verifier))

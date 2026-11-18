@@ -44,7 +44,9 @@ def verify(root):
         raise ValueError("invalid manifest")
     expected = cfg["files"]
     actual = {}
-    for directory, dirs, files in os.walk(root, followlinks=False):
+    def walk_error(error):
+        raise error
+    for directory, dirs, files in os.walk(root, followlinks=False, onerror=walk_error):
         for name in dirs:
             check_private(Path(directory) / name, directory=True)
         for name in files:

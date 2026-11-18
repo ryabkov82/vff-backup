@@ -6,3 +6,6 @@
 - [ ] ★ Implement service-specific sealed Chatwoot capture with coordinated writer drain, DB/storage/checkpoint, and recovery procedure.
 - [ ] Isolated remote S3 integration, actual restore, scheduled run and failure monitoring (S3 client provisioning currently blocked; no production storage).
 - [ ] Independent review and exact candidate checks before PR/merge.
+
+- [x] Independent manifest audit (separate branch): reproduced silent os.walk traversal failure; regression with injected scandir error failed before fix; reject traversal errors; 24/24 mocked backup tests PASS after fix. No live capture or shared worktree changes.
+- [ ] ★ Integrate independent manifest fix via PR; run exact-SHA Sonar gate and applicable role/restore checks. Verify retention isolation if sharing repositories.
