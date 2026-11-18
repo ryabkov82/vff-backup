@@ -41,3 +41,10 @@
 - [x] Implemented exact Docker lifecycle component: pin container/image IDs and reviewed deployment fingerprint, reject unknown active containers, unexpected Compose identity, drift, stopped dependencies; require shared maintenance assertion before exact-ID stop/start and verify result. No live mutations.
 - [x] 21 synthetic lifecycle tests PASS; complete suite 98/98 PASS. Read-only real Docker metadata format, all ten current containers and unchanged before/after ID lists verified; active Website-worker and earlier fleeting unrelated container confirm shared maintenance exclusion required.
 - [ ] ★ Implement real ingress/queue/DB and shared maintenance adapter, connect coordinator, then mutually exclusive TEST capture/restore. Previously blocked remote-role invocation not retried; Sonar and live timer/alerts pending.
+
+## OWNER DECISION — simplified acceptance, 2026-11-18 18:06 CET (supersedes earlier plan)
+- Global: initial operator-only Chatwoot PROD readiness, using existing VFF backup tooling.
+- [x] Existing local logical DB/attachment recovery and independent Restic synthetic local/remote transport evidence retained.
+- [ ] ★ Reuse the existing TEST recovery fixture and standard Restic local repository; verify actual restored DB and attachments against the saved snapshot, without stopping the live service, without any remote credential or network operation. Verify config presence and private permissions, never expose contents.
+- [ ] Document minimal manual maintenance/runbook for a fresh consistent production backup using current tooling; keep experimental capture coordinator/Docker lifecycle/extra TEST S3 outside required initial scope, do not merge or deploy them. Reuse applicable legacy backup fixes only through reviewed PR.
+- [ ] Return to remaining operator-only release gates. Existing remote S3/test secrets are not needed for this recovery check. Remote role/scheduled PROD backup and exact-SHA Sonar remain distinct, unverified; never claim full backup system ready based on a local test. No new services or VMs.
