@@ -280,3 +280,20 @@ vff-backups/
    ```
 
 ---
+
+## Host-prepared snapshot (opt-in)
+
+For a service whose database, attachments and transport checkpoint must be consistent, use a dedicated job with `prepared_snapshot` instead of legacy dump/pause/paths options:
+
+```yaml
+backup_jobs_map:
+  chatwoot:
+    name: chatwoot
+    prepared_snapshot:
+      root: /var/backups/vff-chatwoot-stage
+      program: /usr/local/libexec/vff-chatwoot-capture
+```
+
+The capture program must already exist, be root-owned and executable, and implement service-specific writer drain, fresh consistent capture, validation, and restoration of original service state before returning. It receives one new private directory as its only argument. It must write only private regular files and directories and a `.vff-snapshot.json` with `{"version":1,"files":{"relative/path":"<lowercase SHA256>"}}` describing every regular file other than the manifest. No symlinks, hardlinks, or stale generations. The role verifies ownership, permissions and all digests before Restic. Capture or verification failure prevents backup and retention; upload failure prevents retention. The current generation is cleaned at exit; retention is scoped to the job tag and host so changing generation directory names does not prevent rotation. Use a dedicated authorized repository for each service/environment. Prepared jobs do not require a Compose override; do not configure legacy `db_dump`, `paths`, `containers`, `compose_dir` or excludes for a prepared job.
+
+Implementation is a feature-branch candidate: 23/23 offline regression tests and a real local Restic 0.16.4 synthetic restore PASS (VM200, `check --read-data`, exact bytes and manifest, cleanup, success metric). No actual Chatwoot capture, remote S3 transport, Ansible end-to-end execution, systemd timer or PROD release is accepted by this evidence. Those require separate tests. See TODO.md.

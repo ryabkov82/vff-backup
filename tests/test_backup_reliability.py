@@ -46,7 +46,7 @@ def _ternary(value, when_true, when_false):
     return when_true if value else when_false
 
 
-def render_backup_script(dest: Path, jobs, metrics_dir: Path, env_file: Path, keep_count: int = 7) -> None:
+def render_backup_script(dest: Path, jobs, metrics_dir: Path, env_file: Path, keep_count: int = 7, verifier: str = '/usr/local/libexec/vff-verify-prepared-snapshot') -> None:
     env = Environment(
         loader=FileSystemLoader(str(TEMPLATE_DIR)),
         trim_blocks=True,
@@ -61,6 +61,7 @@ def render_backup_script(dest: Path, jobs, metrics_dir: Path, env_file: Path, ke
     env.filters["int"] = int
     text = env.get_template("vff-backup.sh.j2").render(
         backup_env_file=str(env_file),
+        backup_prepared_verifier_path=verifier,
         backup_enable_metrics=True,
         backup_node_exporter_textfile_dirs=[str(metrics_dir)],
         backup_jobs=jobs,
@@ -463,6 +464,84 @@ class BackupScriptTests(unittest.TestCase):
         self.assertIn("backup", calls[0])
         self.assertNotIn("forget", calls[0])
         self.assertTrue(any(path.name.startswith("run_") for path in self.dump_dir.glob("*.sql.gz")))
+
+    def _prepared_job(self):
+        stage = self.root / "prepared"
+        stage.mkdir(mode=0o700)
+        verifier = self.root / "verify.py"
+        verifier.write_bytes((ROOT / "ansible/roles/backup/files/verify_prepared_snapshot.py").read_bytes())
+        verifier.chmod(0o755)
+        program = self.root / "capture.py"
+        program.write_text(textwrap.dedent("""\
+            #!/usr/bin/env python3
+            import hashlib, json, os, sys
+            from pathlib import Path
+            d = Path(sys.argv[1])
+            mode = os.environ.get("CAPTURE_CASE", "good")
+            payload = d / "example.txt"
+            payload.write_text("synthetic fixture")
+            if mode == "fail":
+                sys.exit(7)
+            if mode == "missing":
+                sys.exit(0)
+            sha = hashlib.sha256(payload.read_bytes()).hexdigest()
+            (d / ".vff-snapshot.json").write_text(json.dumps({"version":1,"files":{"example.txt":sha}}))
+            if mode == "changed":
+                payload.write_text("changed")
+            if mode == "extra":
+                (d / "unexpected.txt").write_text("extra")
+            if mode == "symlink":
+                (d / "link").symlink_to(payload)
+            if mode == "perms":
+                payload.chmod(0o644)
+            """))
+        program.chmod(0o755)
+        job = {"name":"chatwoot-test","prepared_snapshot":{"root":str(stage),"program":str(program)}}
+        return stage, verifier, job
+
+    def test_prepared_generation_validated_and_scoped_retention(self):
+        stage, verifier, job = self._prepared_job()
+        render_backup_script(self.script, [job], self.metrics, self.env_file, verifier=str(verifier))
+        result = self._run(job="chatwoot-test")
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(self._status(),0)
+        calls=self._restic_calls()
+        self.assertEqual(len(calls),2,calls)
+        self.assertIn("generation-",calls[0])
+        self.assertIn("forget --json --group-by host,tags --tag chatwoot-test",calls[1])
+        self.assertEqual(self._docker_calls(),[])
+        self.assertEqual(list(stage.glob("generation-*")),[])
+
+    def test_prepared_fail_closed(self):
+        stage, verifier, job = self._prepared_job()
+        render_backup_script(self.script,[job],self.metrics,self.env_file,verifier=str(verifier))
+        for case in ("fail","missing","changed","extra","symlink","perms"):
+            with self.subTest(case=case):
+                result=self._run({"CAPTURE_CASE":case},job="chatwoot-test")
+                self.assertNotEqual(result.returncode,0,result.stderr)
+                self.assertEqual(self._restic_calls(),[])
+                self.assertEqual(self._docker_calls(),[])
+                self.assertEqual(self._status(),1)
+                self.assertEqual(list(stage.glob("generation-*")),[])
+
+    def test_prepared_rejects_legacy_mode(self):
+        stage, verifier, job=self._prepared_job()
+        job["paths"]=["/opt/shm"]
+        render_backup_script(self.script,[job],self.metrics,self.env_file,verifier=str(verifier))
+        result=self._run(job="chatwoot-test")
+        self.assertNotEqual(result.returncode,0,result.stderr)
+        self.assertEqual(self._restic_calls(),[])
+        self.assertEqual(self._status(),1)
+
+    def test_prepared_failed_upload_never_prunes(self):
+        stage, verifier, job=self._prepared_job()
+        render_backup_script(self.script,[job],self.metrics,self.env_file,verifier=str(verifier))
+        result=self._run({"RESTIC_BACKUP_RC":"7"},job="chatwoot-test")
+        self.assertNotEqual(result.returncode,0,result.stderr)
+        self.assertEqual(len(self._restic_calls()),1)
+        self.assertTrue(self._restic_calls()[0].startswith("backup "))
+        self.assertEqual(self._status(),1)
+        self.assertEqual(list(stage.glob("generation-*")),[])
 
     def test_dump_disabled_still_runs_backup(self):
         self._render([self._job("", enabled=False, container="")])

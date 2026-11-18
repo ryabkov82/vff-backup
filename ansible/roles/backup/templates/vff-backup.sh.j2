@@ -70,6 +70,11 @@ on_exit() {
     done
     paused_count=0
   fi
+  if [[ -n "${prepared_dir:-}" ]]; then
+    if ! rm -rf -- "$prepared_dir"; then
+      cleanup_failed=1
+    fi
+  fi
   rc=$original_rc
   if [[ "$rc" -eq 0 && "$cleanup_failed" -ne 0 ]]; then
     rc=1
@@ -102,7 +107,12 @@ if ! echo "$JOBS_JSON" | jq -e ".[] | select(.name==\"$JOB\")" >/dev/null; then
   exit 2
 fi
 
-PATHS=$(jq_job '.paths | @sh')
+PATHS=$(jq_job '(.paths // []) | @sh')
+PREPARED_ROOT=$(jq_job '.prepared_snapshot.root // ""')
+PREPARED_PROGRAM=$(jq_job '.prepared_snapshot.program // ""')
+PREPARED_ENABLED=$(jq_job 'has("prepared_snapshot")')
+PREPARED_VERIFIER="{{ backup_prepared_verifier_path | default('/usr/local/libexec/vff-verify-prepared-snapshot') }}"
+prepared_dir=""
 DUMP_ENABLED=$(jq_job '.db_dump.enabled // false')
 DUMP_DIR=$(jq_job '.db_dump.dump_dir // ""')
 DUMP_CONTAINER=$(jq_job '.db_dump.container // ""')
@@ -170,6 +180,26 @@ remove_new_dumps() {
   done
   shopt -u nullglob
 }
+
+# Host-prepared snapshots are an explicit mutually exclusive mode.
+if [[ "$PREPARED_ENABLED" == "true" ]]; then
+  [[ "$DUMP_ENABLED" != "true" && -z "$DUMP_DIR" && -z "$DUMP_CONTAINER" && -z "$DUMP_COMMAND" && -z "$COMPOSE_DIR" && -z "$PAUSE_CONTAINERS" && -z "$PATHS" && -z "$EXCLUDES" ]] || fail "prepared snapshot cannot combine legacy settings"
+  for path in "$PREPARED_ROOT" "$PREPARED_PROGRAM" "$PREPARED_VERIFIER"; do
+    [[ "$path" =~ ^/[A-Za-z0-9_./-]+$ && "$(realpath -e -- "$path")" == "$path" ]] || fail "invalid prepared snapshot path"
+  done
+  [[ -d "$PREPARED_ROOT" && "$(stat -c '%u:%a' "$PREPARED_ROOT")" == "$EUID:700" ]] || fail "unsafe staging root"
+  for executable in "$PREPARED_PROGRAM" "$PREPARED_VERIFIER"; do
+    [[ -f "$executable" && -x "$executable" && "$(stat -c '%u' "$executable")" == "$EUID" ]] || fail "unsafe prepared executable"
+    mode=$(stat -c '%a' "$executable")
+    (( (8#$mode & 022) == 0 )) || fail "writable prepared executable"
+  done
+  umask 077
+  exec 9>"$PREPARED_ROOT/.backup.lock"
+  flock -n 9 || fail "prepared snapshot already running"
+  prepared_dir=$(mktemp -d "$PREPARED_ROOT/generation-XXXXXXXX")
+  "$PREPARED_PROGRAM" "$prepared_dir" || fail "prepared snapshot capture failed"
+  "$PREPARED_VERIFIER" "$prepared_dir" || fail "prepared snapshot verification failed"
+fi
 
 # Обязательный дамп: без нового валидного файла restic не запускается.
 if [[ "$DUMP_ENABLED" == "true" ]]; then
@@ -270,7 +300,11 @@ fi
 
 # backup запускается только если обязательный dump выше не завершил job
 set +e
-out=$(eval "restic backup --one-file-system --json --tag \"$JOB\" $RESTIC_EXCLUDES $(eval echo $PATHS)")
+if [[ "$PREPARED_ENABLED" == "true" ]]; then
+  out=$(restic backup --one-file-system --json --tag "$JOB" "$prepared_dir")
+else
+  out=$(eval "restic backup --one-file-system --json --tag \"$JOB\" $RESTIC_EXCLUDES $(eval echo $PATHS)")
+fi
 backup_rc=$?
 set -e
 if [[ $backup_rc -ne 0 ]]; then
@@ -281,7 +315,11 @@ size=$(echo "$out" | jq -r 'select(.message_type=="summary") | (.data_added // .
 
 # retention — прежняя политика, только после успешного snapshot
 set +e
-restic forget --json \
+forget_scope=()
+if [[ "$PREPARED_ENABLED" == "true" ]]; then
+  forget_scope=(--group-by host,tags --tag "$JOB")
+fi
+restic forget --json "${forget_scope[@]}" \
   --keep-last {{ backup_forget_policy.keep_last }} \
   --keep-daily {{ backup_forget_policy.keep_daily }} \
   --keep-weekly {{ backup_forget_policy.keep_weekly }} \

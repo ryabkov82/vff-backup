@@ -9,6 +9,54 @@
     mode: "0750"
   loop: "{{ backup_jobs | default([]) }}"
 
+- name: Create private host-prepared staging roots
+  ansible.builtin.file:
+    path: "{{ item.prepared_snapshot.root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop: "{{ backup_jobs | default([]) }}"
+  when: item.prepared_snapshot is defined
+
+- name: Check prepared capture executable before enabling timer
+  ansible.builtin.stat:
+    path: "{{ item.prepared_snapshot.program }}"
+    follow: false
+  register: backup_prepared_programs
+  loop: "{{ backup_jobs | default([]) }}"
+  when: item.prepared_snapshot is defined
+
+- name: Refuse missing or unsafe capture program
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - item.stat.uid == 0
+      - item.stat.executable
+      - not item.stat.wgrp
+      - not item.stat.woth
+  loop: "{{ backup_prepared_programs.results | default([]) }}"
+  when: not (item.skipped | default(false))
+
+- name: Install manifest verifier for prepared jobs
+  when: (backup_jobs | default([]) | selectattr('prepared_snapshot', 'defined') | list | length) > 0
+  block:
+    - name: Ensure verifier directory
+      ansible.builtin.file:
+        path: /usr/local/libexec
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+    - name: Install prepared manifest verifier
+      ansible.builtin.copy:
+        src: verify_prepared_snapshot.py
+        dest: /usr/local/libexec/vff-verify-prepared-snapshot
+        owner: root
+        group: root
+        mode: "0755"
+
 # таймеры per-job
 - name: Enable/start per-job timers
   ansible.builtin.systemd:
