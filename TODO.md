@@ -23,3 +23,9 @@
 - [ ] ★ Exact-SHA Sonar, deployment/migration verification, live capture/restore, timer/alerting and independent audit remain pending.
 
 - [x] systemd-analyze calendar accepted default `*-*-* 02:30:00`; this verifies expression only, not scheduled execution. Post-commit 4a58dd2: 29/29 offline tests PASS, pushed. Sonar reader on VM141 returned HTTP 404 for `ryabkov82_vff-backup` at exact code SHA 4a58dd25b59f54d7fd69df25e8a7a0939a783adf; project existence/access and authorized analysis setup need verification. No new token, no shared project scan or quality gate claim.
+
+## Chatwoot capture validation (independent offline work)
+- [x] Implemented Chatwoot-specific staging validation/sealing contract, dynamic independently supplied counts, blob checksums, Business offsets, writer evidence; integrated opt-in `prepared_snapshot.kind: chatwoot` and reject unknown kinds before backup. 26 standalone contract tests and 32 existing/extended role tests PASS (58 total), all synthetic/mocked. Generic-only manifest cannot pass Chatwoot verifier. No actual DB dump or transport proof from these tests.
+- [x] Documented capture/restore prerequisites in docs/chatwoot-snapshot-contract.md. Actual VM200 writer inventory shows Website AI worker active; no interruption or live capture. No blocked remote-role retry.
+- [ ] ★ Implement and independently test real capture/restore adapter and durable recovery state; coordinate exclusive TEST window before changing writers; actual scheduled backup/alerting still unverified.
+- [ ] Separate Sonar setup: existing scanner allows only support-agent and vpnbot. vff-backup project/readback 404; requires authorized private project and analysis config before gate.

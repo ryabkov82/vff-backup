@@ -16,6 +16,7 @@
   ansible.builtin.assert:
     that:
       - item.prepared_snapshot is mapping
+      - (item.prepared_snapshot.kind | default('generic')) in ['generic', 'chatwoot']
       - item.prepared_snapshot.root is match('^/var/backups/[A-Za-z0-9_-]+$')
       - item.prepared_snapshot.program is match('^/usr/local/(bin|sbin|libexec)/[A-Za-z0-9_.-]+$')
       - item.db_dump is not defined

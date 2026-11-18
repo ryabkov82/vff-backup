@@ -116,7 +116,9 @@ PATHS=$(jq_job '(.paths // []) | @sh')
 PREPARED_ROOT=$(jq_job '.prepared_snapshot.root // ""')
 PREPARED_PROGRAM=$(jq_job '.prepared_snapshot.program // ""')
 PREPARED_ENABLED=$(jq_job 'has("prepared_snapshot")')
+PREPARED_KIND=$(jq_job 'if .prepared_snapshot == null or (.prepared_snapshot | has("kind") | not) then "generic" else .prepared_snapshot.kind end')
 PREPARED_VERIFIER="{{ backup_prepared_verifier_path | default('/usr/local/libexec/vff-verify-prepared-snapshot') }}"
+CHATWOOT_VERIFIER="{{ backup_chatwoot_verifier_path | default('/usr/local/libexec/vff-backup/chatwoot_snapshot_contract.py') }}"
 prepared_dir=""
 DUMP_ENABLED=$(jq_job '.db_dump.enabled // false')
 DUMP_DIR=$(jq_job '.db_dump.dump_dir // ""')
@@ -188,6 +190,11 @@ remove_new_dumps() {
 
 # Host-prepared snapshots are an explicit mutually exclusive mode.
 if [[ "$PREPARED_ENABLED" == "true" ]]; then
+  case "$PREPARED_KIND" in
+    generic) ;;
+    chatwoot) PREPARED_VERIFIER="$CHATWOOT_VERIFIER" ;;
+    *) fail "unsupported prepared snapshot kind" ;;
+  esac
   [[ "$DUMP_ENABLED" != "true" && -z "$DUMP_DIR" && -z "$DUMP_CONTAINER" && -z "$DUMP_COMMAND" && -z "$COMPOSE_DIR" && -z "$PAUSE_CONTAINERS" && -z "$PATHS" && -z "$EXCLUDES" ]] || fail "prepared snapshot cannot combine legacy settings"
   for path in "$PREPARED_ROOT" "$PREPARED_PROGRAM" "$PREPARED_VERIFIER"; do
     [[ "$path" =~ ^/[A-Za-z0-9_./-]+$ && "$(realpath -e -- "$path")" == "$path" ]] || fail "invalid prepared snapshot path"

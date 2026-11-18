@@ -57,6 +57,27 @@
         group: root
         mode: "0755"
 
+- name: Install Chatwoot-specific prepared verifier
+  when: (backup_jobs | default([]) | selectattr('prepared_snapshot', 'defined') | selectattr('prepared_snapshot.kind', 'defined') | selectattr('prepared_snapshot.kind', 'equalto', 'chatwoot') | list | length) > 0
+  block:
+    - name: Create root-owned Chatwoot verifier module directory
+      ansible.builtin.file:
+        path: /usr/local/libexec/vff-backup
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+    - name: Install Chatwoot contract and shared manifest module
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "/usr/local/libexec/vff-backup/{{ item }}"
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - verify_prepared_snapshot.py
+        - chatwoot_snapshot_contract.py
+
 # таймеры per-job
 - name: Enable/start per-job timers
   ansible.builtin.systemd:

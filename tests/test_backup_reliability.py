@@ -46,7 +46,7 @@ def _ternary(value, when_true, when_false):
     return when_true if value else when_false
 
 
-def render_backup_script(dest: Path, jobs, metrics_dir: Path, env_file: Path, keep_count: int = 7, verifier: str = '/usr/local/libexec/vff-verify-prepared-snapshot') -> None:
+def render_backup_script(dest: Path, jobs, metrics_dir: Path, env_file: Path, keep_count: int = 7, verifier: str = '/usr/local/libexec/vff-verify-prepared-snapshot', chatwoot_verifier: str = '/usr/local/libexec/vff-backup/chatwoot_snapshot_contract.py') -> None:
     env = Environment(
         loader=FileSystemLoader(str(TEMPLATE_DIR)),
         trim_blocks=True,
@@ -62,6 +62,7 @@ def render_backup_script(dest: Path, jobs, metrics_dir: Path, env_file: Path, ke
     text = env.get_template("vff-backup.sh.j2").render(
         backup_env_file=str(env_file),
         backup_prepared_verifier_path=verifier,
+        backup_chatwoot_verifier_path=chatwoot_verifier,
         backup_enable_metrics=True,
         backup_node_exporter_textfile_dirs=[str(metrics_dir)],
         backup_jobs=jobs,
@@ -582,6 +583,68 @@ class BackupScriptTests(unittest.TestCase):
         self.assertIn("forget --json --group-by host,tags --tag chatwoot-test",calls[1])
         self.assertEqual(self._docker_calls(),[])
         self.assertEqual(list(stage.glob("generation-*")),[])
+
+    def test_chatwoot_kind_rejects_generic_manifest(self):
+        stage, verifier, job = self._prepared_job()
+        job["prepared_snapshot"]["kind"] = "chatwoot"
+        modules = self.root / "modules"
+        modules.mkdir()
+        source = ROOT / "ansible/roles/backup/files"
+        for name in ("verify_prepared_snapshot.py", "chatwoot_snapshot_contract.py"):
+            target = modules / name
+            target.write_bytes((source / name).read_bytes())
+            target.chmod(0o755)
+        render_backup_script(self.script, [job], self.metrics, self.env_file,
+                             verifier=str(verifier),
+                             chatwoot_verifier=str(modules / "chatwoot_snapshot_contract.py"))
+        result = self._run(job="chatwoot-test")
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("FAIL_CHATWOOT_GENERATION", result.stderr)
+        self.assertEqual(self._restic_calls(), [])
+        self.assertEqual(self._status(), 1)
+        self.assertEqual(list(stage.glob("generation-*")), [])
+
+    def test_chatwoot_kind_valid_contract_reaches_mock_backup(self):
+        stage, verifier, job = self._prepared_job()
+        job["prepared_snapshot"]["kind"] = "chatwoot"
+        modules = self.root / "modules"
+        modules.mkdir()
+        source = ROOT / "ansible/roles/backup/files"
+        for name in ("verify_prepared_snapshot.py", "chatwoot_snapshot_contract.py"):
+            target = modules / name
+            target.write_bytes((source / name).read_bytes())
+            target.chmod(0o755)
+        program = Path(job["prepared_snapshot"]["program"])
+        program.write_text(
+            '#!/usr/bin/env python3\n'
+            'import sys\nfrom pathlib import Path\n'
+            f'sys.path.insert(0, {str(ROOT / "tests")!r})\n'
+            'from test_chatwoot_snapshot_contract import populate_fixture, contract\n'
+            'root = Path(sys.argv[1])\n'
+            'populate_fixture(root)\ncontract.seal(root)\n')
+        render_backup_script(self.script, [job], self.metrics, self.env_file,
+                             verifier=str(verifier),
+                             chatwoot_verifier=str(modules / "chatwoot_snapshot_contract.py"))
+        result = self._run(job="chatwoot-test")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PASS_CHATWOOT_GENERATION", result.stdout)
+        self.assertEqual(len(self._restic_calls()), 2)
+        self.assertEqual(self._status(), 0)
+        self.assertEqual(list(stage.glob("generation-*")), [])
+
+    def test_prepared_unknown_kind_fails_before_capture(self):
+        stage, verifier, job = self._prepared_job()
+        for kind in ("unexpected", False, None):
+            with self.subTest(kind=kind):
+                job["prepared_snapshot"]["kind"] = kind
+                render_backup_script(self.script, [job], self.metrics, self.env_file,
+                                     verifier=str(verifier))
+                result = self._run(job="chatwoot-test")
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn("unsupported prepared snapshot kind", result.stderr)
+                self.assertEqual(self._restic_calls(), [])
+                self.assertEqual(self._status(), 1)
+                self.assertEqual(list(stage.glob("generation-*")), [])
 
     def test_prepared_verifier_rejects_tree_traversal_errors(self):
         import hashlib
