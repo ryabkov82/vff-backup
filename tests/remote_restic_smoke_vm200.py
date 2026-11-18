@@ -25,12 +25,12 @@ def main():
         if os.geteuid()!=0 or not any(a.get("local")=="10.10.10.155" for link in addresses for a in link["addr_info"]):
             raise RuntimeError("wrong TEST host")
         directory = Path(os.environ["CREDENTIALS_DIRECTORY"])
-        entries = (directory/"restic.env").read_text().splitlines()
+        entries = (directory/"vff-chatwoot-test-restic.env").read_text().splitlines()
         cfg = dict(line.split("=",1) for line in entries)
         keys = {"AWS_ACCESS_KEY_ID","AWS_SECRET_ACCESS_KEY","RESTIC_REPOSITORY","RESTIC_PASSWORD_FILE","RESTIC_CACERT","AWS_DEFAULT_REGION"}
         if len(entries)!=len(keys) or set(cfg)!=keys or cfg["AWS_ACCESS_KEY_ID"]!=USER or cfg["RESTIC_REPOSITORY"]!=REPO or cfg["AWS_DEFAULT_REGION"]!="us-east-1" or not re.fullmatch("[a-f0-9]{64}",cfg["AWS_SECRET_ACCESS_KEY"]):
             raise RuntimeError("wrong TEST credentials")
-        password = directory/"password"
+        password = directory/"vff-chatwoot-test-password"
         if not re.fullmatch("[a-f0-9]{64}",password.read_text().strip()):
             raise RuntimeError("invalid password")
         if hashlib.sha256(CA.read_bytes()).hexdigest()!=CA_SHA:
