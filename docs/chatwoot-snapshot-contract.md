@@ -114,3 +114,7 @@ restore/evidence collection, and actual health postchecks. A journal stores
 intent, not proof those backend operations are correct. Current tests use a
 synthetic backend with fault injection; no live process, credentials, or
 remote repository was accessed by this coordinator.
+
+## Docker lifecycle component (VM200 TEST)
+
+`chatwoot_docker_lifecycle.py` observes all containers, not only Compose project members. It uses exact reviewed container names and Compose labels, full container IDs and image IDs, and an externally supplied reviewed deployment fingerprint. A fresh scan pins their identity for one transaction; replacement or missing mandatory service fails closed. PostgreSQL and Redis must remain running; old standalone writers must remain stopped. Unknown active containers and transitional states are blockers. Stop/start operations use full pinned IDs, require shared maintenance exclusion, and verify the resulting state; they never recreate containers. The caller must enforce the actual host identity, maintenance lock and original-state restart policy. This component does not implement ingress, Sidekiq drain or capture/restore. Its default Docker command runner has not been exercised for live mutations. The VM200 read-only metadata format was verified against the real Docker engine; before/after inventories were identical at that observation. A previous transient unknown container reinforces the need for exclusion shared with E2E. No secret-bearing Docker environment fields are queried.
