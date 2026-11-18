@@ -264,6 +264,8 @@ if [[ -n "$PAUSE_CONTAINERS" ]]; then
     if docker pause "$c"; then
       paused_containers+=("$c")
       paused_count=$((paused_count + 1))
+    else
+      fail "failed to pause container '$c'"
     fi
   done
 fi

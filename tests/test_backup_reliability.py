@@ -188,6 +188,9 @@ class BackupScriptTests(unittest.TestCase):
                   exec "$@"
                 fi
                 if [[ "${1:-}" == "pause" ]]; then
+                  if [[ -n "${MOCK_PAUSE_FAIL:-}" && "${2:-}" == "$MOCK_PAUSE_FAIL" ]]; then
+                    exit 1
+                  fi
                   exit 0
                 fi
                 if [[ "${1:-}" == "unpause" ]]; then
@@ -303,6 +306,23 @@ class BackupScriptTests(unittest.TestCase):
         path = self.dump_dir / name
         write_dump(path, payload or f"good {name}\n".encode(), mtime)
         return path
+
+    def test_pause_failure_aborts_before_restic_and_unwinds_successes(self):
+        for failed, expected in [
+            ("first", ["pause first"]),
+            ("second", ["pause first", "pause second", "unpause first"]),
+            ("third", ["pause first", "pause second", "pause third", "unpause first", "unpause second"]),
+        ]:
+            with self.subTest(failed=failed):
+                self.docker_log.write_text("")
+                self.restic_log.write_text("")
+                self._render([self._job("", enabled=False, containers=["first", "second", "third"])])
+                result = self._run({"MOCK_PAUSE_FAIL": failed})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("failed to pause container", result.stderr)
+                self.assertEqual(self._docker_calls(), expected)
+                self.assertEqual(self._restic_calls(), [])
+                self.assertEqual(self._status(), 1)
 
     def test_missing_db_service_fails_and_does_not_backup_stale_dump(self):
         good = self._seed_good("old.sql.gz", mtime=1_700_000_000)
