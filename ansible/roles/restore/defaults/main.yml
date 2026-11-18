@@ -3,7 +3,7 @@
 # Базовые параметры
 service: "marzban"                 # marzban | shm | ...
 src_host: "{{ inventory_hostname }}"
-s3_endpoint: "https://s3.vpn-for-friends.com"
+s3_endpoint: "https://s3.portalbase.link"
 s3_bucket: "vff-backups"
 s3_region: "us-east-1"
 minio_user: "{{ service }}-user"
