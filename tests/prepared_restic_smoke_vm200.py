@@ -68,7 +68,7 @@ def main():
         run([str(VERIFIER),str(files[0].parent)],env)
         if list((BASE/"stage").glob("generation-*")):
             raise RuntimeError("temporary stage not cleaned")
-        metrics=(BASE/"metrics/backup_metrics.prom").read_text()
+        metrics=(BASE/"metrics"/f"backup_job-{JOB}.prom").read_text()
         if f'backup_last_status{{backup_job="{JOB}"}} 0' not in metrics:
             raise RuntimeError("success metric absent")
         print(json.dumps({"status":"PASS_REAL_LOCAL_RESTIC_PREPARED","snapshot_count":len(snap),

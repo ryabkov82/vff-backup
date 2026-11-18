@@ -66,7 +66,7 @@ def main():
         sid=(set(after)-set(before)).pop()
         if JOB not in after[sid].get("tags",[]):
             raise RuntimeError("tag mismatch")
-        metric=BASE/"metrics/backup_metrics.prom"
+        metric=BASE/"metrics"/f"backup_job-{JOB}.prom"
         if f'backup_last_status{{backup_job="{JOB}"}} 0' not in metric.read_text() or list((BASE/"stage").glob("generation-*")):
             raise RuntimeError("success metric or cleanup failed")
         phase="role-restore"

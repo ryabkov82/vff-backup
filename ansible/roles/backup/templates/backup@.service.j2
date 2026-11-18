@@ -12,7 +12,8 @@ ExecStart={{ backup_bin_path }} %i
 
 User=root
 Group=root
-WorkingDirectory=/root
+# The service hides /root via ProtectHome=true; use an accessible cwd.
+WorkingDirectory=/
 
 # Нагрузка/IO
 Nice=10

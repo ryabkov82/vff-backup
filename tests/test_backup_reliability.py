@@ -109,6 +109,38 @@ class BackupConfigTests(unittest.TestCase):
         self.assertIn('> "$DUMP_OUT"', job["db_dump"]["command"])
         self.assertNotIn("date +%F_%H%M%S", job["db_dump"]["command"])
 
+    def test_service_and_timer_render_for_legacy_and_prepared_jobs(self):
+        env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)),
+                          trim_blocks=True, undefined=StrictUndefined)
+        env.filters["bool"] = _as_bool
+        service = env.get_template("backup@.service.j2")
+        timer = env.get_template("backup@.timer.j2")
+        for jobs in ([{"name": "shm", "db_dump": {"enabled": True}}],
+                     [{"name": "chatwoot", "prepared_snapshot": {
+                         "root": "/var/backups/chatwoot", "program": "/usr/local/libexec/capture"}}]):
+            for metrics in (True, False):
+                with self.subTest(jobs=jobs, metrics=metrics):
+                    rendered = service.render(
+                        backup_jobs=jobs, backup_env_file="/etc/vff-backup/restic.env",
+                        backup_bin_path="/usr/local/bin/vff-backup.sh",
+                        backup_env_dir="/etc/vff-backup", backup_db_dump_dir="/var/backups/db",
+                        backup_enable_metrics=metrics,
+                        backup_node_exporter_textfile_dirs=["/var/lib/node_exporter/textfile"])
+                    lines = rendered.splitlines()
+                    self.assertIn("WorkingDirectory=/", lines)
+                    self.assertIn("ProtectHome=true", lines)
+                    self.assertIn("ExecStart=/usr/local/bin/vff-backup.sh %i", lines)
+                    self.assertIn("ReadWritePaths=/etc/vff-backup /var/cache/restic", lines)
+                    self.assertEqual("ReadWritePaths=/var/lib/node_exporter/textfile" in lines, metrics)
+                    self.assertEqual("ReadWritePaths=/var/backups/db" in lines, "db_dump" in jobs[0])
+                    self.assertIn("[Install]", lines)
+        rendered = timer.render(backup_timer_oncalendar="*-*-* 02:30:00",
+                                backup_timer_randomized_delay="900s").splitlines()
+        self.assertIn("OnCalendar=*-*-* 02:30:00", rendered)
+        self.assertIn("Persistent=true", rendered)
+        self.assertIn("RandomizedDelaySec=900s", rendered)
+        self.assertIn("WantedBy=timers.target", rendered)
+
     def test_rendered_group_vars_embed_expected_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -286,7 +318,10 @@ class BackupScriptTests(unittest.TestCase):
         )
 
     def _status(self) -> int:
-        text = (self.metrics / "backup_metrics.prom").read_text()
+        paths = list(self.metrics.glob("backup_job-*.prom"))
+        self.assertEqual(len(paths), 1, paths)
+        self.assertEqual(stat.S_IMODE(paths[0].stat().st_mode), 0o644)
+        text = paths[0].read_text()
         statuses = []
         for line in text.splitlines():
             if line.startswith("backup_last_status{"):
@@ -304,6 +339,42 @@ class BackupScriptTests(unittest.TestCase):
         path = self.dump_dir / name
         write_dump(path, payload or f"good {name}\n".encode(), mtime)
         return path
+
+    def test_two_jobs_preserve_independent_monitoring_status(self):
+        first = self._job("", enabled=False)
+        second = dict(first, name="other")
+        self._render([first, second])
+        self.assertEqual(self._run(job="shm").returncode, 0)
+        self.assertNotEqual(self._run({"RESTIC_BACKUP_RC": "7"}, job="other").returncode, 0)
+        metrics = "\n".join(path.read_text() for path in self.metrics.glob("*.prom"))
+        self.assertIn('backup_last_status{backup_job="shm"} 0', metrics)
+        self.assertIn('backup_last_status{backup_job="other"} 1', metrics)
+
+    def test_environment_failure_updates_previous_success(self):
+        self._render([self._job("", enabled=False)])
+        self.assertEqual(self._run().returncode, 0)
+        self.assertEqual(self._status(), 0)
+        self.env_file.write_text("false\n")
+        self.assertNotEqual(self._run().returncode, 0)
+        self.assertEqual(self._status(), 1)
+        self.assertEqual(len(self._restic_calls()), 2)
+
+    def test_invalid_unknown_and_duplicate_job_do_not_publish_metrics(self):
+        first = self._job("", enabled=False)
+        self._render([first, first])
+        for job in ("../escape", "unknown", "shm"):
+            with self.subTest(job=job):
+                self.assertNotEqual(self._run(job=job).returncode, 0)
+        self.assertEqual(list(self.metrics.glob("*.prom")), [])
+        self.assertEqual(self._restic_calls(), [])
+
+    def test_metric_publication_error_fails_job(self):
+        self._render([self._job("", enabled=False)])
+        (self.metrics / "backup_job-shm.prom").mkdir()
+        result = self._run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed to publish backup metrics", result.stderr)
+        self.assertEqual(list(self.metrics.glob(".backup_job-*.prom.*")), [])
 
     def test_missing_db_service_fails_and_does_not_backup_stale_dump(self):
         good = self._seed_good("old.sql.gz", mtime=1_700_000_000)
