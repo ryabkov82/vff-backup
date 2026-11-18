@@ -86,3 +86,31 @@ captured config. All evidence and content remain in the private generation.
 The validator trusts evidence supplied by the adapter. Synthetic test
 fixtures use a deliberately fake PGDMP header; PASS is not real database
 restore, writer drain, transport, timer or authorization evidence.
+
+## Capture coordinator and crash recovery (offline-tested)
+
+`chatwoot_capture_coordinator.py` implements the host-independent transaction.
+It is not a deployable host adapter and does not invoke Docker or a database.
+The operator must use an adapter bound to an exact deployment identity and a
+maintenance exclusion shared by deployment/E2E tools. A private, persistent
+journal directory must be outside the disposable snapshot generation. The
+coordinator takes an exclusive lock and persists/fsyncs the original writer
+and ingress state before any mutation. It fences ingress, stops producers,
+drains Sidekiq, stops Sidekiq, verifies quiescence before and after collection,
+then restores only originally running writers, checks recovery and restores the
+original ingress state before sealing. A failed recovery leaves the intent;
+sealing is prohibited. Reconcile explicitly under maintenance exclusion after
+re-observing the same deployment and complete writer inventory; never guess
+or restart previously absent/stopped services. A crash during journal
+publication can leave a temporary hardlink: if the strict journal loader
+rejects it, reconcile with an administrator; no automatic deletion of an
+ambiguous intent. If an ingress mutation fails, its actual state must be
+observed rather than assuming it remained fenced.
+
+Backend requirements: real shared lock, exact container identities, idempotent
+stop/start without recreation, positive confirmation of ingress fence and
+full writer inventory, queue drain and external-write exclusion, real dump
+restore/evidence collection, and actual health postchecks. A journal stores
+intent, not proof those backend operations are correct. Current tests use a
+synthetic backend with fault injection; no live process, credentials, or
+remote repository was accessed by this coordinator.

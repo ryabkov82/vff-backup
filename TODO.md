@@ -29,3 +29,8 @@
 - [x] Documented capture/restore prerequisites in docs/chatwoot-snapshot-contract.md. Actual VM200 writer inventory shows Website AI worker active; no interruption or live capture. No blocked remote-role retry.
 - [ ] ★ Implement and independently test real capture/restore adapter and durable recovery state; coordinate exclusive TEST window before changing writers; actual scheduled backup/alerting still unverified.
 - [ ] Separate Sonar setup: existing scanner allows only support-agent and vpnbot. vff-backup project/readback 404; requires authorized private project and analysis config before gate.
+
+## Capture orchestration and recovery journal — 2026-11-18
+- [x] Implemented transport-independent capture coordinator: private persistent intent before mutations, exclusive lock, ordered fence/stop/drain, confirm quiescence, restore exact original state and seal only after recovery. Explicit reconciliation refuses deployment/writer identity drift or unresolved intent. Journal is separate from disposable generation.
+- [x] 19 synthetic coordinator fault-injection tests PASS, including partial mutation, failed health/restore, ingress failure, interrupted run, journal failure, no restart of stopped/absent writers. Complete offline suite 77/77 PASS. Documentation identifies adapter contract and crash/reconciliation limits.
+- [ ] ★ Implement reviewed real host backend (shared E2E/deployment exclusion, ingress and exact Docker state, queue drain, DB dump/restore and evidence), then exclusive TEST maintenance acceptance. Existing unrelated E2E not interrupted; previously blocked remote-role invocation not retried. Real schedule/alerting and Sonar exact SHA still pending.
