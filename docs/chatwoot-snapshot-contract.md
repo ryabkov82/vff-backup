@@ -1,3 +1,13 @@
+# Scope reduction — owner decision, 2026-11-18
+
+The detailed design below is retained as experimental history, not a required release implementation. Use the existing VFF backup tooling and a short, operator-controlled maintenance procedure. No custom capture coordinator, Docker lifecycle framework, new S3 service, or new VM is required for recovery acceptance. Do not merge/deploy this experimental branch wholesale.
+
+Minimal procedure for a fresh operator-only Chatwoot backup: arrange a maintenance window; record running services; pause incoming traffic and Business polling, drain pending deliveries and stop writers; leave PostgreSQL running. Create a private logical `pg_dump -Fc` and copy the matching ActiveStorage volume, required configuration/overlays and Business checkpoint. Resume only the services that were running and check health. Use standard Restic with the existing VFF backup repository and its approved credentials; do not invent another backup system. Restore to a separate scratch database/directory, with real outgoing transports disabled; compare table counts, referenced attachment checksums and configuration/checkpoint before reconnecting. Never apply the legacy Compose recreation task to Chatwoot unchanged. The existing scheduler/monitoring should be used after a real job is verified, not marked ready now.
+
+Verified on VM200: a historical TEST fixture was put into a temporary **local** encrypted Restic repository and restored. `check --read-data` and exact bytes passed; eight restored SQL counts matched, 685 messages, 225 conversations, 41 attachments/blobs, 2,334,168 storage bytes; scratch DB removed. Three private config files were present, but their restore and full service startup were not tested. Source service never stopped. No remote credential used. This is a recovery test of the saved fixture, not evidence of a fresh consistent capture or scheduled/offsite production backup. The isolated S3 fixture may be retained for separately approved tests, but is outside the immediate recovery exercise.
+
+---
+
 # Chatwoot prepared snapshot / recovery contract (TEST candidate)
 
 Status: offline validator integrated into the existing prepared backup role via
