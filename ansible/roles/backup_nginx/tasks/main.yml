@@ -78,6 +78,7 @@
   tags: [nginx]
 
 - name: Render vhost for S3 Console
+  when: s3_console_enabled | bool
   vars:
     ctx:
       name: s3_console
@@ -94,15 +95,43 @@
   notify: Reload nginx
   tags: [nginx]
 
-- name: Enable sites by symlink
+- name: Enable S3 API site
   ansible.builtin.file:
-    src: "{{ nginx_sites_available_dir }}/{{ item }}.conf"
-    dest: "{{ nginx_sites_enabled_dir }}/{{ item }}.conf"
+    src: "{{ nginx_sites_available_dir }}/s3.conf"
+    dest: "{{ nginx_sites_enabled_dir }}/s3.conf"
     state: link
-  loop:
-    - s3
-    - s3-console
   notify: Reload nginx
+  tags: [nginx]
+
+- name: Enable S3 Console site
+  when: s3_console_enabled | bool
+  ansible.builtin.file:
+    src: "{{ nginx_sites_available_dir }}/s3-console.conf"
+    dest: "{{ nginx_sites_enabled_dir }}/s3-console.conf"
+    state: link
+  notify: Reload nginx
+  tags: [nginx]
+
+- name: Remove retired public S3 console vhost
+  when: not (s3_console_enabled | bool)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ nginx_sites_available_dir }}/s3-console.conf"
+    - "{{ nginx_sites_enabled_dir }}/s3-console.conf"
+  notify: Reload nginx
+  tags: [nginx]
+
+- name: Remove duplicate hand-managed S3 API vhost
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ nginx_sites_available_dir }}/s3-portalbase.conf"
+    - "{{ nginx_sites_enabled_dir }}/s3-portalbase.conf"
+  notify: Reload nginx
+  tags: [nginx]
 
 - name: Generate self-signed certs (if selfsigned)
   when: nginx_cert_method == 'selfsigned'
@@ -125,6 +154,7 @@
       args:
         creates: /etc/ssl/certs/s3.fullchain.pem
     - name: Generate self-signed cert for {{ s3_console_domain }}
+      when: s3_console_enabled | bool
       ansible.builtin.command: >-
         openssl req -x509 -nodes -newkey rsa:2048 -days 3650
         -keyout /etc/ssl/private/s3-console.privkey.pem
@@ -152,6 +182,7 @@
       register: s3_cert
 
     - name: Check cert exists (s3-console)
+      when: s3_console_enabled | bool
       ansible.builtin.stat:
         path: "/etc/letsencrypt/live/{{ s3_console_domain }}/fullchain.pem"
       register: s3c_cert
@@ -172,7 +203,9 @@
 
     # Выпускаем для s3-console, если нет
     - name: Issue cert for {{ s3_console_domain }}
-      when: not (s3c_cert.stat.exists | default(false))
+      when:
+        - s3_console_enabled | bool
+        - not (s3c_cert.stat.exists | default(false))
       ansible.builtin.command: >-
         certbot certonly --webroot -w /var/www/html
         -d {{ s3_console_domain }}

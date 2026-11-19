@@ -33,7 +33,7 @@
 |---|---|---|---|
 | `service` | str | `marzban` | Логическое имя сервиса (используется как тег `snapshot_tag` и сегмент пути в S3). |
 | `src_host` | str | `{{ inventory_hostname }}` | Имя **каталога** в S3-репозитории (откуда берем бэкап). Не путать с меткой `Host` внутри снапшота. |
-| `s3_endpoint` | str | `https://s3.vpn-for-friends.com` | Endpoint S3/MinIO. |
+| `s3_endpoint` | str | `https://s3.portalbase.link` | Endpoint S3/MinIO. |
 | `s3_bucket` | str | `vff-backups` | Бакет с бэкапами. |
 | `s3_region` | str | `us-east-1` | Регион (для AWS совместимости). |
 | `minio_user` | str | `{{ service }}-user` | Имя пользователя MinIO, секрет ищется в `~/.ansible/secrets/minio/<minio_user>`. |

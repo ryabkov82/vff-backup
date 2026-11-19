@@ -70,6 +70,6 @@ ansible-playbook -i ansible/hosts.ini ansible/playbooks/minio.yml --limit hub --
 Smoke-тест:
 ```bash
 SHM_SECRET=$(cat ~/.ansible/secrets/minio/shm-user)
-mc-minio alias set shm https://s3.vpn-for-friends.com shm-user "$SHM_SECRET"
+mc-minio alias set shm https://s3.portalbase.link shm-user "$SHM_SECRET"
 echo ok | mc-minio pipe shm/vff-backups/shm/test.txt
 ```
