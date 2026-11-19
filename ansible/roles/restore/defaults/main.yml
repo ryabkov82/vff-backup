@@ -23,10 +23,10 @@ minio_secret_file: "{{ lookup('env', 'HOME') }}/.ansible/secrets/minio/{{ minio_
 
 # Восстановление (опционально)
 perform_restore: false
-restore_target: ""         # новый частный каталог; пусто — mktemp в /tmp; данные в data/
+restore_target: ""         # новый частный каталог; пусто — mkdtemp в системном temp (обычно /tmp); данные в data/
 restore_includes: []       # пример: ['/var/lib/marzban/**','/opt/marzban/.env']
 restore_excludes: []       # пример: ['/var/lib/marzban/xray-core/**']
-restore_force: false       # подтверждение, если restore_target не под /tmp
+restore_force: false       # подтверждение, если restore_target не прямой потомок системного temp
 snapshot_id: ""            # необязательно; если не пусто — используем конкретный снапшот
 snapshot_newest: true      # брать самый новый, если snapshot_id не задан
 snapshot_tag: "{{ service }}"

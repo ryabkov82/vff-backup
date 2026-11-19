@@ -43,41 +43,53 @@ def select_snapshot(rows, host, tag, requested="", newest=True):
     return max(candidates, key=order)
 
 
-def private_target(requested, force=False, temp_root="/tmp"):
-    """Create a new private directory; never follow symlinks or reuse paths."""
-    root = Path(temp_root)
-    if not requested:
-        info = root.lstat()
-        require(stat.S_ISDIR(info.st_mode) and info.st_uid in (0, os.geteuid())
-                and (not info.st_mode & 0o022 or info.st_mode & stat.S_ISVTX),
-                "unsafe temporary root")
-        return Path(tempfile.mkdtemp(prefix="vff-restore-", dir=root))
-    require(requested.startswith("/") and requested != "/" and
-            all(part not in ("", ".", "..") for part in requested.split("/")[1:]),
-            "restore target must be canonical absolute path")
-    target = Path(requested)
-    require(force or target.parent == root, "restore outside direct temporary child requires force")
-    # Every parent must be a stable, root/effective-user controlled directory.
-    # A system temp root is allowed to be sticky and writable by other users.
+def open_trusted_directory(path, system_temp):
+    """Open a canonical directory through stable, owner-controlled parents."""
+    require(path.is_absolute(), "restore parent must be absolute")
     fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         parent = Path("/")
-        for part in target.parent.parts[1:]:
+        for part in path.parts[1:]:
             next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             os.close(fd)
             fd = next_fd
             parent /= part
             info = os.fstat(fd)
-            sticky_temp = parent == Path("/tmp") and info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
+            # Only root-owned sticky directories on the system temp path
+            # may be shared. Each existing child must still be trusted.
+            sticky_temp = (parent == system_temp or parent in system_temp.parents) and (
+                info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX))
             require(info.st_uid in (0, os.geteuid()) and
                     (not info.st_mode & 0o022 or sticky_temp),
                     "restore parent not privately controlled")
-        require(target.parent.resolve(strict=True) == target.parent,
-                "noncanonical restore parent")
+        require(path.resolve(strict=True) == path, "noncanonical restore parent")
+        return fd
+    except (OSError, ValueError):
+        os.close(fd)
+        raise
+
+
+def private_target(requested, force=False, temp_root=None):
+    """Create a new private directory; never follow symlinks or reuse paths."""
+    system_temp = Path(tempfile.gettempdir())
+    root = system_temp if temp_root is None else Path(temp_root)
+    target = None
+    if requested:
+        require(requested.startswith("/") and requested != "/" and
+                all(part not in ("", ".", "..") for part in requested.split("/")[1:]),
+                "restore target must be canonical absolute path")
+        target = Path(requested)
+        require(force or target.parent == root,
+                "restore outside direct temporary child requires force")
+    parent = target.parent if target is not None else root
+    fd = open_trusted_directory(parent, system_temp)
+    try:
+        if target is None:
+            return Path(tempfile.mkdtemp(prefix="vff-restore-", dir=parent))
         os.mkdir(target.name, mode=0o700, dir_fd=fd)
+        return target
     finally:
         os.close(fd)
-    return target
 
 
 def restic(args):

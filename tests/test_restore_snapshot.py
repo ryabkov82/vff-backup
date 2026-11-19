@@ -68,6 +68,31 @@ class RestoreTests(unittest.TestCase):
         self.assertEqual(target.parent, self.root)
         self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o700)
 
+    def test_automatic_staging_rejects_untrusted_ancestor(self):
+        shared = self.root / "untrusted"
+        shared.mkdir(mode=0o700)
+        below = shared / "private-child"
+        below.mkdir(mode=0o700)
+        shared.chmod(0o777)
+        with self.assertRaises(ValueError):
+            private_target("", temp_root=below)
+        self.assertEqual(list(below.iterdir()), [])
+
+    def test_automatic_staging_rejects_symlink_root(self):
+        link = self.root / "link"
+        real = self.root / "real"
+        real.mkdir(mode=0o700)
+        link.symlink_to(real, target_is_directory=True)
+        with self.assertRaises(OSError):
+            private_target("", temp_root=link)
+        self.assertEqual(list(real.iterdir()), [])
+
+    def test_system_temp_selection_keeps_private_staging(self):
+        with patch("restore_snapshot.tempfile.gettempdir", return_value=str(self.root)):
+            target = private_target("")
+        self.assertEqual(target.parent, self.root)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o700)
+
     def test_traversal_relative_and_noncanonical_paths(self):
         for target in ("relative", str(self.root) + "/../escape", str(self.root) + "//new",
                        str(self.root) + "/./new", str(self.root) + "/new/"):
