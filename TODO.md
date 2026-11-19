@@ -1,0 +1,14 @@
+# Third audit corrections
+Global: operator-only Chatwoot readiness, existing backup safety. Separate feature from d124d5c; no deployment, no extra capture framework.
+- [x] F-03/F-04: new private staging root, exact host/tag and unambiguous full snapshot ID, no fallback, no interpolation into shell. Existing target refused even with force; new data/ subdir documented. 13 offline helper/role-structure tests PASS. Actual Ansible/Restic execution not tested.
+- [x] F-16: first failed pause aborts before Restic and EXIT trap unpauses successful earlier containers. 20 mocked backup tests PASS. Legacy dump-before-pause ordering unchanged; no claim of coherent live snapshots.
+- [ ] ★ Independent review and live testing solely on approved future isolated route; no deployment or secret operations now.
+- [ ] Applicable tests, review, exact SHA Sonar before merge. PROD preparation F-01/F-17/F-18 separately; no live backup or restore operations in this branch.
+
+- [ ] ★ Real local Restic acceptance of the new F-03/F-04 helper (synthetic bytes only, no S3, Chatwoot or live backup). Use isolated VM103, non-installed Ubuntu package, explicit host/tag, wrong-host and wrong-snapshot rejection; compare actual restored bytes and private target. Existing 33 mocked checks remain separate. No rollout.
+
+- [x] Actual Restic 0.16.4 on VM103 from non-installed signed Ubuntu package: exact test tree 6fe68805fcc41fb2dd6971ba350f980f8a3cbe2e (source archive SHA256 180498a011659a6eaa005b98373de14f6ee11975676b592e4d167afb949f8afd), local encrypted repo created with ephemeral random password; two host snapshots, check --read-data, wrong host/ID/tag and symlink/traversal rejected before destination creation; restored 4096 synthetic bytes exactly, excluded file absent, private parent 0700, second invocation refused. Real test PASS (11.639s), existing mocked suite 33/33. No real Chatwoot data, offsite credentials, role execution or live pause. No deployment. PR permission remained read-only in connector; code retained on separate branch.
+
+## Third-audit release consolidation — 2026-11-19
+- [ ] ★ Combine audited restore fixes 977ef73 with current main 3d9d9e6 in separate feature candidate; retain retired Marzban removal and current S3 endpoint. Offline 33 mock tests PASS (real test skipped without Restic on VM110). Rerun genuine synthetic local Restic on exact candidate VM103; no deployment or real backup/restore. Preserve separate owner acceptance for actual Chatwoot backup and exact Sonar. No main merge.
+- [x] 35c8bba: updated main merged, postcommit offline suite 33/33 PASS; real test skipped (no Restic on VM110). Executable restore helper and actual Restic test byte-identical to real-tested 6fe6880. Separate transfer of 35c8bba archive to VM103 was rejected by access policy; do not retry through another path. Actual merged-inventory remote acceptance, role and exact Sonar still open. No S3, live data, or deployment touched.
