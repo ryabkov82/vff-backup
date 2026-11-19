@@ -398,7 +398,7 @@ class BackupScriptTests(unittest.TestCase):
         result = self._run()
 
         self.assertNotEqual(result.returncode, 0, result.stderr)
-        self.assertIn("cannot overwrite existing file", result.stderr)
+        self.assertIn("db dump command failed", result.stderr)
         self.assertEqual(self._restic_calls(), [])
         self.assertEqual(self._status(), 1)
         self.assertEqual(target.read_bytes(), target_bytes)
