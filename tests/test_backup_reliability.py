@@ -307,6 +307,75 @@ class BackupScriptTests(unittest.TestCase):
         write_dump(path, payload or f"good {name}\n".encode(), mtime)
         return path
 
+    def test_optional_pause_before_dump_keeps_writers_paused_through_restic(self):
+        command = 'grep -qx "pause rails" "$DOCKER_LOG" && printf "test\\n" | gzip -c > "$DUMP_OUT"'
+        job = self._job(command, containers=["rails"])
+        job["db_dump"]["pause_before_dump"] = True
+        self._render([job])
+        result = self._run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self._docker_calls()
+        self.assertLess(calls.index("pause rails"), next(i for i, c in enumerate(calls) if c.startswith("compose exec ")))
+        self.assertEqual(calls[-1], "unpause rails")
+        self.assertEqual(len(self._restic_calls()), 2)
+        self.assertEqual(self._status(), 0)
+
+    def test_default_dump_before_pause_is_unchanged(self):
+        command = 'if grep -qx "pause rails" "$DOCKER_LOG"; then exit 22; fi; printf "test\\n" | gzip -c > "$DUMP_OUT"'
+        self._render([self._job(command, containers=["rails"])])
+        result = self._run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self._docker_calls()
+        self.assertGreater(calls.index("pause rails"), next(i for i, c in enumerate(calls) if c.startswith("compose exec ")))
+        self.assertEqual(calls[-1], "unpause rails")
+        self.assertEqual(self._status(), 0)
+
+    def test_early_pause_failure_skips_dump_and_restic_and_unwinds(self):
+        job = self._job('printf "bad" | gzip -c > "$DUMP_OUT"', containers=["rails", "sidekiq"])
+        job["db_dump"]["pause_before_dump"] = True
+        self._render([job])
+        result = self._run({"MOCK_PAUSE_FAIL": "sidekiq"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self._docker_calls(), ["compose ps --services", "pause rails", "pause sidekiq", "unpause rails"])
+        self.assertEqual(self._restic_calls(), [])
+        self.assertEqual(list(self.dump_dir.glob("*.sql.gz")), [])
+        self.assertEqual(self._status(), 1)
+
+    def test_failed_dump_after_early_pause_unwinds_and_skips_restic(self):
+        job = self._job("exit 7", containers=["rails"])
+        job["db_dump"]["pause_before_dump"] = True
+        self._render([job])
+        result = self._run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("db dump command failed", result.stderr)
+        self.assertEqual(self._docker_calls()[-1], "unpause rails")
+        self.assertEqual(self._restic_calls(), [])
+        self.assertEqual(self._status(), 1)
+
+    def test_pause_before_dump_rejects_database_container(self):
+        job = self._job("true", containers=["mysql"])
+        job["db_dump"]["pause_before_dump"] = True
+        self._render([job])
+        result = self._run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot pause dump container", result.stderr)
+        self.assertEqual(self._docker_calls(), [])
+        self.assertEqual(self._restic_calls(), [])
+
+    def test_pause_before_dump_requires_enabled_dump_and_writer(self):
+        for enabled, containers in [(False, ["rails"]), (True, [])]:
+            with self.subTest(enabled=enabled, containers=containers):
+                self.docker_log.write_text("")
+                self.restic_log.write_text("")
+                job = self._job("true", enabled=enabled, containers=containers)
+                job["db_dump"]["pause_before_dump"] = True
+                self._render([job])
+                result = self._run()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("pause_before_dump requires", result.stderr)
+                self.assertEqual(self._docker_calls(), [])
+                self.assertEqual(self._restic_calls(), [])
+
     def test_pause_failure_aborts_before_restic_and_unwinds_successes(self):
         for failed, expected in [
             ("first", ["pause first"]),
