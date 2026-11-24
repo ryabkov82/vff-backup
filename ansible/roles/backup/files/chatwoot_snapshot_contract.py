@@ -265,9 +265,9 @@ V2_OPTIONAL = frozenset((
     "source/redis/dump.rdb", "source/remna_redis/dump.rdb"))
 V2_DATA_PATTERNS = (
     # Only local synthetic SMTP sink messages (not arbitrary mail/log trees).
-    re.compile(r"source/mails/[0-9]{19}-[0-9a-f]{24}\.eml"),
+    re.compile(r"source/mails/\d{19}-[0-9a-f]{24}\.eml", re.ASCII),
     # Redis/Valkey native persisted data, not generic source subdirectories.
-    re.compile(r"source/(?:redis|remna_redis)/appendonlydir/appendonly\.aof\.(?:manifest|[0-9]+\.(?:base\.(?:rdb|aof)|incr\.aof))"),
+    re.compile(r"source/(?:redis|remna_redis)/appendonlydir/appendonly\.aof\.(?:manifest|\d+\.(?:base\.(?:rdb|aof)|incr\.aof))", re.ASCII),
     # VM205's explicitly scoped synthetic send idempotency marker.
     re.compile(r"source/test3-checkpoint/vff-bizpair-test-send-205-[0-9a-f]{16}\.state"),
 )

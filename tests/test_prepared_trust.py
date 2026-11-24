@@ -11,7 +11,7 @@ from prepared_trust import main, trusted_path
 
 class PreparedTrustTests(unittest.TestCase):
     def test_trusted_file_and_safe_future_install(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=os.environ.get("VFF_TEST_TMPDIR", str(Path.home()))) as tmp:
             path = Path(tmp)
             leaf = path / "file"
             leaf.write_text("fixture")
@@ -25,7 +25,7 @@ class PreparedTrustTests(unittest.TestCase):
                 main([])
 
     def test_writable_ancestor_and_future_leaf(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=os.environ.get("VFF_TEST_TMPDIR", str(Path.home()))) as tmp:
             parent = Path(tmp) / "unsafe"
             parent.mkdir()
             parent.chmod(0o775)
@@ -36,8 +36,20 @@ class PreparedTrustTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     trusted_path(str(path), allow_missing=True)
 
+    def test_public_sticky_ancestor_is_not_trusted(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get("VFF_TEST_TMPDIR", str(Path.home()))) as tmp:
+            public = Path(tmp) / "public"
+            public.mkdir()
+            public.chmod(0o1777)
+            leaf = public / "private"
+            leaf.mkdir(mode=0o700)
+            with self.assertRaises(ValueError):
+                trusted_path(str(leaf))
+            with self.assertRaises(ValueError):
+                trusted_path(str(public / "missing"), allow_missing=True)
+
     def test_symlink_noncanonical_and_hardlink(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=os.environ.get("VFF_TEST_TMPDIR", str(Path.home()))) as tmp:
             root = Path(tmp)
             leaf = root / "file"
             leaf.write_text("fixture")

@@ -142,7 +142,7 @@ class BackupConfigTests(unittest.TestCase):
 
 class BackupScriptTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get("VFF_TEST_TMPDIR", str(Path.home())))
         self.root = Path(self.tmp.name)
         self.compose = self.root / "opt" / "shm"
         self.compose.mkdir(parents=True)
