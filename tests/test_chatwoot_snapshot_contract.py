@@ -167,6 +167,13 @@ class SnapshotContractTests(unittest.TestCase):
         self.write("business-state/channel-1.offset", b"124\n")
         self.reject()
 
+    def test_checkpoint_identity_is_ascii_only(self):
+        self.evidence["business_offsets"] = {"1\u0661": 123}
+        (self.root / "business-state/channel-1.offset").unlink()
+        self.write("business-state/channel-1\u0661.offset", b"123\n")
+        self.save()
+        self.reject()
+
     def test_extra_checkpoint(self):
         self.write("business-state/channel-2.offset", b"1\n")
         self.reject()

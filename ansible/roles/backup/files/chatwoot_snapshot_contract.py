@@ -29,6 +29,8 @@ REQUIRED_WRITERS = frozenset(("rails", "sidekiq", "telegram-business-poller"))
 OPTIONAL_WRITERS = frozenset(("telegram-poller", "web-drafter", "gemma-drafter"))
 EVIDENCE = "capture-evidence.json"
 MAX_EVIDENCE = 32 * 1024 * 1024
+CONFIG_PREFIX = "config/"
+CHATWOOT_DUMP = "chatwoot.dump"
 
 
 def require(condition, message):
@@ -102,10 +104,10 @@ def validate_config(evidence, files):
     require(isinstance(config, list) and all(safe_relative(x) for x in config)
             and len(set(config)) == len(config)
             and MIN_CONFIG <= set(config), "invalid configuration inventory")
-    actual = {name.removeprefix("config/") for name in files
-              if name.startswith("config/")}
+    actual = {name.removeprefix(CONFIG_PREFIX) for name in files
+              if name.startswith(CONFIG_PREFIX)}
     require(actual == set(config), "configuration inventory mismatch")
-    require(all(files["config/" + name].stat().st_size > 0 for name in config),
+    require(all(files[CONFIG_PREFIX + name].stat().st_size > 0 for name in config),
             "empty required configuration")
     images = evidence["images"]
     require(isinstance(images, dict) and set(images) == SERVICES
@@ -119,7 +121,7 @@ def validate_checkpoints(evidence, files):
     require(isinstance(offsets, dict) and bool(offsets), "missing Business state")
     expected = set()
     for channel, offset in offsets.items():
-        require(isinstance(channel, str) and re.fullmatch(r"[1-9][0-9]*", channel)
+        require(isinstance(channel, str) and re.fullmatch(r"[1-9]\d*", channel, flags=re.ASCII)
                 and integer(offset), "invalid checkpoint identity or value")
         name = f"business-state/channel-{channel}.offset"
         expected.add(name)
@@ -173,12 +175,12 @@ def validate_generation(root):
             "unresolved DB attachment references")
     require(integer(evidence["pending_delivery_jobs"])
             and evidence["pending_delivery_jobs"] == 0, "pending delivery jobs")
-    require("chatwoot.dump" in files, "missing database dump")
-    with files["chatwoot.dump"].open("rb") as stream:
-        require(stream.read(5) == b"PGDMP" and files["chatwoot.dump"].stat().st_size > 5,
+    require(CHATWOOT_DUMP in files, "missing database dump")
+    with files[CHATWOOT_DUMP].open("rb") as stream:
+        require(stream.read(5) == b"PGDMP" and files[CHATWOOT_DUMP].stat().st_size > 5,
                 "invalid custom dump header")
-    require(all(name in (EVIDENCE, "chatwoot.dump", MANIFEST)
-                or name.startswith(("config/", "storage/", "business-state/"))
+    require(all(name in (EVIDENCE, CHATWOOT_DUMP, MANIFEST)
+                or name.startswith((CONFIG_PREFIX, "storage/", "business-state/"))
                 for name in files), "unexpected top-level data")
     validate_writer_state(evidence)
     counts = validate_counts(evidence)
