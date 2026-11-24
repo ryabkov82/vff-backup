@@ -168,7 +168,14 @@ class VerifiedCaptureManifestTests(unittest.TestCase):
                 "link_tls","images","blob_integrity","checkpoint","scratch_cleanup"),True)
         }
         for name in contract.V2_REQUIRED:
-            f=root/name;f.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+            f=root/name
+            f.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+            # pathlib's intermediate mkdir calls do not inherit mode.
+            # Explicitly build a private fixture under either common umask.
+            for parent in f.parents:
+                if parent == root:
+                    break
+                parent.chmod(0o700)
             f.write_bytes(b"PGDMP"+b"x"*256 if name.endswith(".dump") else b"synthetic")
             f.chmod(0o600)
         (root/contract.V2_RECEIPT).write_text(json.dumps(receipt))
