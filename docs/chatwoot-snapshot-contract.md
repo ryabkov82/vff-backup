@@ -15,6 +15,17 @@ IV-03: preflight and runtime validate root-controlled ancestry before environmen
 
 Native VM205 `PASS_VM205_NATIVE_PREPARED_ROLE`: 140.07 s, 110 files, eight database table counts, two blobs, real archive rejection, delivery fence and Restic integrity PASS; all 13 containers resumed. Ephemeral local encrypted repository removed; no new retained/off-host recovery point. Timer remains disabled. This is TEST evidence, not PROD authorization or a new off-host/physical-host-loss acceptance.
 
+### Exact candidate quality evidence
+
+Measure the restore, snapshot verifier, Chatwoot contract and prepared trust
+modules together. The fixed-profile coverage converter in
+`byadmitry/proxmox-config` must accept all four sources when
+`prepared_trust.py` is present, reject missing/extra entries, and emit Sonar
+generic coverage XML from actual measured Cobertura line/branch totals.
+Do not stage raw Cobertura XML in the generic-report slot. Preserve rejected
+requests; submit immutable input for the final candidate SHA. No coverage
+exclusions, project duplication or threshold changes are authorized.
+
 ## Current VM205 adapter
 
 Use the existing role with `prepared_snapshot.kind: chatwoot`, an approved
