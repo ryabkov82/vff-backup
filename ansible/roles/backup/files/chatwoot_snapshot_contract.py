@@ -230,7 +230,7 @@ V2_REQUIRED = frozenset((
     "source/test3-connection.env", "source/test3-checkpoint/channel-1.offset",
     "source/config/compose.operator.yaml", "source/config/compose.functional.yaml",
     "source/config/compose.backends205.yaml", "source/image-inventory.json",
-    "source/blob-inventory.json", "source/link/link.env", "source/link/verify",
+    "source/blob-inventory.json", "source/delivery-fence.json", "source/link/link.env", "source/link/verify",
     "source/link/ca.crt", "source/link/server.crt", "source/link/server.key",
     "source/link/ca.key", "source/link/nginx.conf", V2_RECEIPT))
 V2_SERVICES = frozenset((
@@ -239,12 +239,40 @@ V2_SERVICES = frozenset((
     "remna", "vpnbot-webtest", "shm-link-tls"))
 
 
+def validate_delivery_fence(path):
+    """Require independently collected DB and Redis fence evidence on both sides."""
+    require(path.stat().st_size <= 4096, "oversized delivery fence")
+    state = json.loads(path.read_text(), object_pairs_hook=unique)
+    require(isinstance(state, dict) and set(state) == {
+        "version", "source_db", "restored_db", "source_redis", "restored_redis",
+        "scratch_reservation_rejected"
+    } and type(state["version"]) is int and state["version"] == 1
+        and state["scratch_reservation_rejected"] is True,
+        "invalid delivery fence")
+    db_keys = {"channels", "scoped_inboxes", "outgoing", "unconfirmed", "failed",
+               "invalid_status", "invalid_ack", "reservations"}
+    source, restored = state["source_db"], state["restored_db"]
+    require(all(isinstance(row, dict) and set(row) == db_keys and
+                all(integer(n) for n in row.values()) for row in (source, restored)),
+            "invalid DB delivery inventory")
+    require(source == restored and source["channels"] == source["scoped_inboxes"] == 1
+            and all(source[k] == 0 for k in db_keys -
+                    {"channels", "scoped_inboxes", "outgoing"}),
+            "pending or mismatched DB delivery")
+    for key in ("source_redis", "restored_redis"):
+        counts = state[key]
+        require(isinstance(counts, dict) and set(counts) == {"queued", "working", "retry"}
+                and all(type(n) is int and n == 0 for n in counts.values()),
+                "pending Redis delivery")
+
+
 def verify_prepared_capture(root):
     """Verify integrity and mandatory trusted-adapter evidence, not a DB engine."""
     root = Path(root)
     count = verify(root)
     files = inventory(root)
     require(V2_REQUIRED <= set(files), "missing verified capture artifacts")
+    validate_delivery_fence(files["source/delivery-fence.json"])
     require(all(x in (MANIFEST, V2_RECEIPT) or x.startswith("source/")
                 for x in files), "unexpected capture data")
     receipt = json.loads(files[V2_RECEIPT].read_text(), object_pairs_hook=unique)

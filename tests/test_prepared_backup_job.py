@@ -178,6 +178,13 @@ class VerifiedCaptureManifestTests(unittest.TestCase):
                 parent.chmod(0o700)
             f.write_bytes(b"PGDMP"+b"x"*256 if name.endswith(".dump") else b"synthetic")
             f.chmod(0o600)
+        clear=dict(channels=1,scoped_inboxes=1,outgoing=8,unconfirmed=0,
+                   failed=0,invalid_status=0,invalid_ack=0,reservations=0)
+        queues=dict(queued=0,working=0,retry=0)
+        (root/"source/delivery-fence.json").write_text(json.dumps({
+            "version":1,"source_db":clear,"restored_db":clear,
+            "source_redis":queues,"restored_redis":queues,
+            "scratch_reservation_rejected":True}))
         (root/contract.V2_RECEIPT).write_text(json.dumps(receipt))
         (root/"source/image-inventory.json").write_text(json.dumps({
             service:{"image":"synthetic","id":"sha256:"+"a"*64}
@@ -208,6 +215,25 @@ class VerifiedCaptureManifestTests(unittest.TestCase):
             with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
                 root=Path(tmp);receipt=self.make(root);receipt[field]=value
                 (root/contract.V2_RECEIPT).write_text(json.dumps(receipt))
+                seal(root)
+                with self.assertRaises(ValueError):
+                    contract.verify_prepared_capture(root)
+
+    def test_delivery_fence_rejects_db_or_redis_uncertainty_even_when_resealed(self):
+        contract=old_contract.contract
+        from verify_prepared_snapshot import seal
+        for section,key,value in (
+                ("source_db","reservations",1),("restored_db","unconfirmed",1),
+                ("source_db","failed",1),("restored_db","outgoing",9),
+                ("source_db","scoped_inboxes",2),("restored_db","invalid_ack",1),
+                ("source_redis","queued",1),("restored_redis","working",1),
+                ("restored_redis","retry",False)):
+            with self.subTest(section=section,key=key), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);self.make(root)
+                path=root/"source/delivery-fence.json"
+                state=json.loads(path.read_text())
+                state[section][key]=value
+                path.write_text(json.dumps(state))
                 seal(root)
                 with self.assertRaises(ValueError):
                     contract.verify_prepared_capture(root)

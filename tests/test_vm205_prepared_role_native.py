@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Explicit VM205 TEST-only acceptance of the actual rendered prepared role.
 
-Not a unittest fixture or a scheduled backup. No PROD or remote credentials,
-no modification of existing Restic repos; all staging is root-private.
+Not a unittest fixture or a scheduled backup. No PROD or remote credentials.
+Default uses an ephemeral local repo; --retain-local appends one scoped
+snapshot to the existing VM205 repo, preserving every previous snapshot.
 """
 import json
 import os
@@ -11,6 +12,7 @@ import re
 import secrets
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -24,6 +26,8 @@ PG="pgvector/pgvector@sha256:0dd3149a06e4579a0d70d8fef9945636cd514005e7237deb27f
 def check(ok,code):
     if not ok:raise RuntimeError(code)
 def main():
+    check(sys.argv[1:] in ([],["--retain-local"]),"INVALID_MODE")
+    retain=sys.argv[1:]==["--retain-local"]
     check(os.geteuid()==0 and socket.gethostname()=="vff-functional-srk-205","VM205_ONLY")
     check(not ROOT.exists() and not ROOT.is_symlink(),"NATIVE_STAGE_EXISTS")
     check(ROLE.is_file() and ROLE.stat().st_uid==0 and not ROLE.stat().st_mode&0o022,"UNSAFE_RENDERED_ROLE")
@@ -43,12 +47,26 @@ def main():
         with os.fdopen(fd,"wb") as f:f.write(data)
     try:
         (ROOT/"metrics").mkdir(mode=0o700)
-        secret=ROOT/"password"
-        private(secret,(secrets.token_urlsafe(48)+"\n").encode())
-        repo=ROOT/"repository"
+        if retain:
+            repo=RECOVERY/"restic-repo"
+            secret=RECOVERY/"restic.pass"
+            for path,mode in ((repo,0o700),(secret,0o600)):
+                info=path.lstat()
+                check(not path.is_symlink() and info.st_uid==0 and
+                      stat.S_IMODE(info.st_mode)==mode,"UNSAFE_EXISTING_REPOSITORY")
+            check(repo.is_dir() and secret.is_file(),"EXISTING_REPOSITORY_MISSING")
+        else:
+            secret=ROOT/"password"
+            private(secret,(secrets.token_urlsafe(48)+"\n").encode())
+            repo=ROOT/"repository"
         private(ROOT/"restic.env",("RESTIC_REPOSITORY="+str(repo)+"\nRESTIC_PASSWORD_FILE="+str(secret)+"\n").encode())
         restic=["restic","-r",str(repo),"-p",str(secret)]
-        run(restic+["init"])
+        if not retain:
+            run(restic+["init"])
+        before=json.loads(run(restic+["snapshots","--json"])[0])
+        check(not any("vm205-prepared-drill" in (row.get("tags") or []) for row in before),
+              "PREPARED_TAG_ALREADY_EXISTS")
+        previous_ids={row["id"] for row in before}
         result["phase"]="role"
         # Capture output privately; never print raw Docker/Restic errors.
         proc=subprocess.run([str(ROLE),"vm205-prepared-drill"],capture_output=True,env=env,timeout=480)
@@ -65,7 +83,9 @@ def main():
         match=re.findall(rb"verified prepared snapshot ([0-9a-f]{8,64})",proc.stdout)
         check(len(match)==1,"SNAPSHOT_RECEIPT_MISSING")
         shot=match[0].decode()
-        snapshots=json.loads(run(restic+["snapshots","--json"])[0])
+        after=json.loads(run(restic+["snapshots","--json"])[0])
+        snapshots=[row for row in after if row["id"] not in previous_ids]
+        check(previous_ids.issubset({row["id"] for row in after}),"PREVIOUS_SNAPSHOT_MISSING")
         check(len(snapshots)==1 and snapshots[0]["id"].startswith(shot)
               and snapshots[0]["hostname"]==socket.gethostname()
               and snapshots[0]["tags"]==["vm205-prepared-drill"],"SNAPSHOT_SCOPE")
@@ -82,6 +102,7 @@ def main():
         files=contract.verify_prepared_capture(generation)
         receipt=json.loads((generation/contract.V2_RECEIPT).read_text())
         check(receipt["status"]=="PASS_VM205_PREPARED_RESTORE","CAPTURE_RECEIPT_SCOPE")
+        delivery=json.loads((generation/"source/delivery-fence.json").read_text())
         # Independent actual native pg_restore list rejects a fake archive;
         # the valid generation already had an actual scratch pg_restore.
         stub=ROOT/"invalid.dump"
@@ -103,7 +124,10 @@ def main():
                       restored_files=files,restic_integrity=True,snapshot=shot,
                       real_capture_restore=True,real_pg_archive_negative=True,
                       db_counts=receipt["restored_counts"],blobs=receipt["restored_blobs"],
-                      prepared_cleanup=True,local_temporary_repo=True,off_host=False,
+                      prepared_cleanup=True,local_temporary_repo=not retain,off_host=False,
+                      retained_local_snapshot=retain,previous_snapshots_preserved=len(previous_ids),
+                      db_delivery_fence=True,scratch_reservation_rejected=delivery["scratch_reservation_rejected"],
+                      business_outgoing=delivery["restored_db"]["outgoing"],
                       schedule_enabled=False,duration_seconds=round(time.monotonic()-start,2))
     except Exception as e:
         result["reason"]=str(e) if re.fullmatch(r"[A-Z0-9_]{4,120}",str(e)) else type(e).__name__
