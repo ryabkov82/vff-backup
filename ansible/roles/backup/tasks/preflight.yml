@@ -12,6 +12,22 @@
       }}
   when: (backup_jobs_map | default({})) is mapping
 
+- name: Validate host-prepared snapshots before installing or scheduling
+  ansible.builtin.assert:
+    that:
+      - item.prepared_snapshot is mapping
+      - item.prepared_snapshot.schedule_enabled is not defined or item.prepared_snapshot.schedule_enabled is boolean
+      - (item.prepared_snapshot.kind | default('generic')) in ['generic', 'chatwoot']
+      - item.prepared_snapshot.root is match('^/var/backups/[A-Za-z0-9_-]+$')
+      - item.prepared_snapshot.program is match('^/usr/local/(bin|sbin|libexec)/[A-Za-z0-9_.-]+$')
+      - item.db_dump is not defined
+      - item.compose_dir is not defined
+      - (item.paths | default([])) | length == 0
+      - (item.containers | default([])) | length == 0
+      - (item.exclude_paths | default([])) | length == 0
+  loop: "{{ backup_jobs | default([]) }}"
+  when: item.prepared_snapshot is defined
+
 - name: Ensure deps
   ansible.builtin.package:
     name:
@@ -19,6 +35,8 @@
       - jq
       - bash
       - restic
+      - python3
+      - util-linux
     state: present
 
 - name: Ensure textfile dirs exist (readable by node_exporter)

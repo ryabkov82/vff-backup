@@ -12,7 +12,7 @@ ExecStart={{ backup_bin_path }} %i
 
 User=root
 Group=root
-WorkingDirectory=/root
+WorkingDirectory=/
 
 # Нагрузка/IO
 Nice=10
@@ -50,6 +50,10 @@ ReadWritePaths={{ backup_node_exporter_textfile_dirs | join(' ') }}
 {% if jobs_need_dump | length > 0 -%}
 ReadWritePaths={{ backup_db_dump_dir }}
 {%- endif %}
+
+{% for job in backup_jobs | selectattr('prepared_snapshot', 'defined') %}
+ReadWritePaths={{ job.prepared_snapshot.root }}
+{% endfor %}
 
 [Install]
 WantedBy=multi-user.target

@@ -46,7 +46,7 @@ def _ternary(value, when_true, when_false):
     return when_true if value else when_false
 
 
-def render_backup_script(dest: Path, jobs, metrics_dir: Path, env_file: Path, keep_count: int = 7) -> None:
+def render_backup_script(dest: Path, jobs, metrics_dir: Path, env_file: Path, keep_count: int = 7, **options) -> None:
     env = Environment(
         loader=FileSystemLoader(str(TEMPLATE_DIR)),
         trim_blocks=True,
@@ -66,6 +66,7 @@ def render_backup_script(dest: Path, jobs, metrics_dir: Path, env_file: Path, ke
         backup_jobs=jobs,
         backup_dump_keep_count=keep_count,
         backup_dump_keep_days=0,
+        **options,
         backup_forget_policy={
             "keep_last": 7,
             "keep_daily": 14,
@@ -216,7 +217,7 @@ class BackupScriptTests(unittest.TestCase):
                     echo "restic backup failed" >&2
                     exit "${RESTIC_BACKUP_RC}"
                   fi
-                  printf '%s\\n' '{"message_type":"summary","data_added":1234}'
+                  printf '%s\\n' '{"message_type":"summary","data_added":1234,"snapshot_id":"abcdef0123456789"}'
                   exit 0
                 fi
                 if [[ "${1:-}" == "forget" ]]; then

@@ -9,10 +9,89 @@
     mode: "0750"
   loop: "{{ backup_jobs | default([]) }}"
 
-# таймеры per-job
-- name: Enable/start per-job timers
+- name: Create private host-prepared staging roots
+  ansible.builtin.file:
+    path: "{{ item.prepared_snapshot.root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop: "{{ backup_jobs | default([]) }}"
+  when: item.prepared_snapshot is defined
+
+- name: Check prepared capture executable before enabling timer
+  ansible.builtin.stat:
+    path: "{{ item.prepared_snapshot.program }}"
+    follow: false
+  register: backup_prepared_programs
+  loop: "{{ backup_jobs | default([]) }}"
+  when: item.prepared_snapshot is defined
+
+- name: Refuse missing or unsafe capture program
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - item.stat.uid == 0
+      - item.stat.executable
+      - not item.stat.wgrp
+      - not item.stat.woth
+  loop: "{{ backup_prepared_programs.results | default([]) }}"
+  when: not (item.skipped | default(false))
+
+- name: Install manifest verifier for prepared jobs
+  when: (backup_jobs | default([]) | selectattr('prepared_snapshot', 'defined') | list | length) > 0
+  block:
+    - name: Ensure verifier directory
+      ansible.builtin.file:
+        path: /usr/local/libexec
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+    - name: Install prepared manifest verifier
+      ansible.builtin.copy:
+        src: verify_prepared_snapshot.py
+        dest: /usr/local/libexec/vff-verify-prepared-snapshot
+        owner: root
+        group: root
+        mode: "0755"
+
+- name: Install Chatwoot-specific prepared verifier
+  when: (backup_jobs | default([]) | selectattr('prepared_snapshot', 'defined') | selectattr('prepared_snapshot.kind', 'defined') | selectattr('prepared_snapshot.kind', 'equalto', 'chatwoot') | list | length) > 0
+  block:
+    - name: Create root-owned Chatwoot verifier module directory
+      ansible.builtin.file:
+        path: /usr/local/libexec/vff-backup
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+    - name: Install Chatwoot contract and shared manifest module
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "/usr/local/libexec/vff-backup/{{ item }}"
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - verify_prepared_snapshot.py
+        - chatwoot_snapshot_contract.py
+
+# Do not enable a prepared job before explicit acceptance of its adapter,
+# remote destination and recovery. Legacy timers retain their behavior.
+- name: Enable/start approved per-job timers
   ansible.builtin.systemd:
     name: "backup@{{ item.name }}.timer"
     state: started
     enabled: true
   loop: "{{ backup_jobs | default([]) }}"
+  when: item.prepared_snapshot is not defined or (item.prepared_snapshot.schedule_enabled | default(false) | bool)
+
+- name: Keep unapproved prepared-job timers disabled
+  ansible.builtin.systemd:
+    name: "backup@{{ item.name }}.timer"
+    state: stopped
+    enabled: false
+  loop: "{{ backup_jobs | default([]) }}"
+  when: item.prepared_snapshot is defined and not (item.prepared_snapshot.schedule_enabled | default(false) | bool)
