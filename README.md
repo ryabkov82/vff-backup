@@ -13,8 +13,8 @@
    │ Restic → S3
    ▼
 [MinIO Server] — локальное S3-хранилище
-   ├── API:      https://s3.vpn-for-friends.com
-   ├── Console:  https://s3-console.vpn-for-friends.com
+   ├── API:      https://s3.portalbase.link
+   ├── Console:  только 127.0.0.1:9001, публично закрыта
    └── Бакет:    vff-backups
 ```
 

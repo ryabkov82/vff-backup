@@ -34,7 +34,7 @@
 
 | Переменная | Описание | Пример |
 |-------------|-----------|--------|
-| `backup_s3_endpoint` | S3-эндпоинт MinIO | `https://s3.vpn-for-friends.com` |
+| `backup_s3_endpoint` | S3-эндпоинт MinIO | `https://s3.portalbase.link` |
 | `backup_s3_bucket` | Бакет в S3 | `vff-backups` |
 | `backup_s3_region` | Регион | `us-east-1` |
 | `backup_restic_repository` | Полный путь к репозиторию | `s3:{{ backup_s3_endpoint }}/{{ backup_s3_bucket }}/shm/{{ inventory_hostname }}` |

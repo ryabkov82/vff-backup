@@ -1,6 +1,8 @@
 # Домены публичных точек
-s3_domain: "s3.vpn-for-friends.com"
+s3_domain: "s3.portalbase.link"
 s3_console_domain: "s3-console.vpn-for-friends.com"
+# Публичный vhost консоли не создаётся. Локальная консоль остаётся на 127.0.0.1:9001.
+s3_console_enabled: false
 
 
 # Разрешённые сети для доступа к S3 API (опционально)
