@@ -9,6 +9,12 @@ adapter evidence, not an independent attestation or signature. Local native
 role execution and restore passed twice, including systemd on 2026-11-24.
 No off-host operational job, timer, alert or PROD deployment is accepted yet.
 
+## Fourth-audit safety correction (2026-11-24)
+
+IV-03: preflight and runtime validate root-controlled ancestry before environment loading or execution. The VM205 capture wrapper imports only the reviewed protected module bundle; the deployment/configuration boundary is protected as well. IV-05: the reserved Chatwoot jobs require the Chatwoot semantic verifier, and generic jobs cannot accept recognizable Chatwoot dumps. IV-06: v2 accepts only explicitly inventoried configuration, recognized native database data and checkpoint files, and database-referenced attachment blobs verified by checksum. Extra sealed files, directories, symlinks and hardlinks fail closed. Existing backups are not deleted.
+
+Native VM205 `PASS_VM205_NATIVE_PREPARED_ROLE`: 140.07 s, 110 files, eight database table counts, two blobs, real archive rejection, delivery fence and Restic integrity PASS; all 13 containers resumed. Ephemeral local encrypted repository removed; no new retained/off-host recovery point. Timer remains disabled. This is TEST evidence, not PROD authorization or a new off-host/physical-host-loss acceptance.
+
 ## Current VM205 adapter
 
 Use the existing role with `prepared_snapshot.kind: chatwoot`, an approved

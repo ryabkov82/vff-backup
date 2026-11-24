@@ -238,6 +238,75 @@ V2_SERVICES = frozenset((
     "shm-mysql", "shm-core", "shm-api", "remna-postgres", "remna-valkey",
     "remna", "vpnbot-webtest", "shm-link-tls"))
 
+# IV-06: v2 is explicitly the VM205 fixture profile, not a PROD contract.
+# Exact configuration and recovery artifacts observed in the accepted
+# native/remote snapshot. Data-volume patterns are scoped below.
+V2_CONFIG_FILES = frozenset((
+    "compose.operator.yaml", "compose.functional.yaml", "compose.backends205.yaml",
+    "compose.functional.business-test3.yaml",
+    "compose.functional.business-test3-contact-link.override.yaml",
+    "compose.functional.business-test3-contact-link-live-test.override.yaml",
+    "telegram-poller/encryption_preflight.rb", "telegram-poller/poller.rb",
+    "ops/operator_delivery_error_privacy.rb", "ops/operator_telegram_delivery_guard.rb",
+    "ops/verify_fixture_vm205.rb", "ops/test_vm205_full_restore_e2e.py",
+    "ops/test_vm205_link_restore.py", "ops/test_vm205_restore_e2e.py",
+    "ops/test_vm205_prepared_backup.py", "ops/test_vm205_sidekiq_class_inventory.rb",
+    "web-drafter/contact_linker.rb", "shm-tls/vm205-link.conf"))
+V2_REQUIRED = V2_REQUIRED | frozenset(
+    "source/config/" + name for name in V2_CONFIG_FILES) | frozenset((
+    "source/link/contact_linker.rb", "source/link/linked-test-fixture.json",
+    "source/link/overlay.yaml", "source/link/shm-readonly.json",
+    "source/storage/vff-restore-205-canary", "source/test3-checkpoint/singleton.lock"))
+V2_DATA_DIRS = frozenset((
+    "source/shm_data", "source/mails", "source/storage",
+    "source/redis", "source/redis/appendonlydir", "source/remna_redis",
+    "source/remna_redis/appendonlydir", "source/test3-checkpoint"))
+V2_OPTIONAL = frozenset((
+    "source/redis/dump.rdb", "source/remna_redis/dump.rdb"))
+V2_DATA_PATTERNS = (
+    # Only local synthetic SMTP sink messages (not arbitrary mail/log trees).
+    re.compile(r"source/mails/[0-9]{19}-[0-9a-f]{24}\.eml"),
+    # Redis/Valkey native persisted data, not generic source subdirectories.
+    re.compile(r"source/(?:redis|remna_redis)/appendonlydir/appendonly\.aof\.(?:manifest|[0-9]+\.(?:base\.(?:rdb|aof)|incr\.aof))"),
+    # VM205's explicitly scoped synthetic send idempotency marker.
+    re.compile(r"source/test3-checkpoint/vff-bizpair-test-send-205-[0-9a-f]{16}\.state"),
+)
+
+
+def v2_blob_paths(files, counts):
+    inventory_path = files["source/blob-inventory.json"]
+    require(inventory_path.stat().st_size <= MAX_EVIDENCE, "oversized blob inventory")
+    blobs = json.loads(inventory_path.read_text(), object_pairs_hook=unique)
+    # Check the DB-derived blob inventory, sizes and checksums. Only these
+    # blob files (plus the explicit TEST canary) may enter the archive.
+    storage = {name.removeprefix("source/"): path for name, path in files.items()
+               if name.startswith("source/storage/")}
+    validate_blobs({"blobs": blobs}, counts, storage)
+    return {"source/storage/" + row["key"][:2] + "/" + row["key"][2:4] +
+            "/" + row["key"] for row in blobs}
+
+
+def validate_v2_inventory(root, files, counts):
+    fixed = V2_REQUIRED | V2_OPTIONAL | {MANIFEST}
+    blobs = v2_blob_paths(files, counts)
+    require(all(name in fixed or name in blobs or
+                any(pattern.fullmatch(name) for pattern in V2_DATA_PATTERNS)
+                for name in files), "undeclared v2 capture artifact")
+    checkpoints = {name for name in files if name.startswith("source/test3-checkpoint/")}
+    required_checkpoints = {"source/test3-checkpoint/channel-1.offset",
+                            "source/test3-checkpoint/singleton.lock"}
+    require(required_checkpoints <= checkpoints and len(checkpoints - required_checkpoints) <= 1,
+            "invalid v2 checkpoint inventory")
+    allowed_dirs = set(V2_DATA_DIRS)
+    for name in files:
+        allowed_dirs.update(parent.as_posix() for parent in PurePosixPath(name).parents
+                            if parent != PurePosixPath("."))
+    for parent, dirs, _ in os.walk(root, followlinks=False, onerror=reject_walk_error):
+        for name in dirs:
+            require((Path(parent) / name).relative_to(root).as_posix() in allowed_dirs,
+                    "undeclared v2 capture directory")
+
+
 
 def validate_delivery_fence(path):
     """Require independently collected DB and Redis fence evidence on both sides."""
@@ -273,8 +342,6 @@ def verify_prepared_capture(root):
     files = inventory(root)
     require(V2_REQUIRED <= set(files), "missing verified capture artifacts")
     validate_delivery_fence(files["source/delivery-fence.json"])
-    require(all(x in (MANIFEST, V2_RECEIPT) or x.startswith("source/")
-                for x in files), "unexpected capture data")
     receipt = json.loads(files[V2_RECEIPT].read_text(), object_pairs_hook=unique)
     require(isinstance(receipt, dict) and set(receipt) == {
         "version", "scope", "status", "source_counts", "restored_counts",
@@ -289,6 +356,7 @@ def verify_prepared_capture(root):
     require(isinstance(a, dict) and isinstance(b, dict) and set(a) == set(b) == TABLES
             and all(integer(v) for v in (*a.values(), *b.values())) and a == b
             and a["accounts"] >= 1, "restore count mismatch")
+    validate_v2_inventory(root, files, a)
     require(integer(receipt["source_blobs"]) and integer(receipt["restored_blobs"])
             and receipt["source_blobs"] == receipt["restored_blobs"] == a["active_storage_blobs"],
             "restore blob mismatch")

@@ -5,8 +5,11 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-# не падать, если env ещё не создан
+# Prepared jobs validate the environment path before sourcing it in the
+# script. Do not let systemd inject that file into the root process first.
+{% if (backup_jobs | selectattr('prepared_snapshot', 'defined') | list | length) == 0 %}
 EnvironmentFile=-{{ backup_env_file }}
+{% endif %}
 # имя джоба передаём как %i
 ExecStart={{ backup_bin_path }} %i
 

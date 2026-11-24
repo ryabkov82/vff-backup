@@ -78,6 +78,13 @@
         - verify_prepared_snapshot.py
         - chatwoot_snapshot_contract.py
 
+- name: Verify installed prepared root execution chain before enabling timers
+  ansible.builtin.command:
+    argv: "{{ ['/usr/bin/python3', '-I', '-c', lookup('ansible.builtin.file', role_path + '/files/prepared_trust.py'), backup_bin_path, backup_env_file, item.prepared_snapshot.root, item.prepared_snapshot.program, '/usr/local/libexec/vff-verify-prepared-snapshot'] + (item.prepared_snapshot.trusted_paths | default([])) + (['/usr/local/libexec/vff-backup/chatwoot_snapshot_contract.py', '/usr/local/libexec/vff-backup/verify_prepared_snapshot.py'] if (item.prepared_snapshot.kind | default('generic')) == 'chatwoot' else []) }}"
+  changed_when: false
+  loop: "{{ backup_jobs | default([]) }}"
+  when: item.prepared_snapshot is defined
+
 # Do not enable a prepared job before explicit acceptance of its adapter,
 # remote destination and recovery. Legacy timers retain their behavior.
 - name: Enable/start approved per-job timers

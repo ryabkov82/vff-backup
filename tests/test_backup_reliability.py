@@ -61,6 +61,7 @@ def render_backup_script(dest: Path, jobs, metrics_dir: Path, env_file: Path, ke
     env.filters["int"] = int
     text = env.get_template("vff-backup.sh.j2").render(
         backup_env_file=str(env_file),
+        backup_prepared_trust_source=(ROOT / "ansible/roles/backup/files/prepared_trust.py").read_text(),
         backup_enable_metrics=True,
         backup_node_exporter_textfile_dirs=[str(metrics_dir)],
         backup_jobs=jobs,
