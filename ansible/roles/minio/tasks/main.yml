@@ -86,6 +86,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ minio_compose_dir }}"
     state: present
+    pull: never
 
 - name: Wait for MinIO API port
   ansible.builtin.wait_for:

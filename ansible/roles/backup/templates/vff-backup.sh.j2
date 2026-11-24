@@ -107,6 +107,7 @@ DUMP_ENABLED=$(jq_job '.db_dump.enabled // false')
 DUMP_DIR=$(jq_job '.db_dump.dump_dir // ""')
 DUMP_CONTAINER=$(jq_job '.db_dump.container // ""')
 DUMP_COMMAND=$(jq_job '.db_dump.command // ""')
+DUMP_PAUSE_FIRST=$(jq_job '.db_dump.pause_before_dump // false')
 COMPOSE_DIR=$(jq_job '.compose_dir // ""')
 PAUSE_CONTAINERS=$(jq_job '.containers // [] | @sh')
 EXCLUDES=$(jq_job '.exclude_paths // [] | @sh')
@@ -171,6 +172,31 @@ remove_new_dumps() {
   shopt -u nullglob
 }
 
+# An opt-in consistent ordering: pause the application writers before dumping
+# and keep them paused through restic backup. Legacy jobs remain unchanged.
+pause_job_containers() {
+  [[ -n "$PAUSE_CONTAINERS" ]] || return 0
+  eval "set -- $PAUSE_CONTAINERS"
+  for c in "$@"; do
+    if docker pause "$c"; then
+      paused_containers+=("$c")
+      paused_count=$((paused_count + 1))
+    else
+      fail "failed to pause container '$c'"
+    fi
+  done
+}
+
+[[ "$DUMP_PAUSE_FIRST" == "true" || "$DUMP_PAUSE_FIRST" == "false" ]] || fail "invalid db_dump.pause_before_dump"
+if [[ "$DUMP_PAUSE_FIRST" == "true" ]]; then
+  [[ "$DUMP_ENABLED" == "true" ]] || fail "pause_before_dump requires enabled db_dump"
+  [[ -n "$PAUSE_CONTAINERS" ]] || fail "pause_before_dump requires writer containers"
+  eval "set -- $PAUSE_CONTAINERS"
+  for c in "$@"; do
+    [[ "$c" != "$DUMP_CONTAINER" ]] || fail "cannot pause dump container '$c'"
+  done
+fi
+
 # Обязательный дамп: без нового валидного файла restic не запускается.
 if [[ "$DUMP_ENABLED" == "true" ]]; then
   [[ -n "$DUMP_DIR" ]] || fail "db_dump is enabled but dump_dir is empty"
@@ -190,6 +216,10 @@ if [[ "$DUMP_ENABLED" == "true" ]]; then
     if ! printf '%s\n' "$services" | grep -qx "$DUMP_CONTAINER"; then
       fail "compose service '$DUMP_CONTAINER' not found; db_dump is required"
     fi
+  fi
+
+  if [[ "$DUMP_PAUSE_FIRST" == "true" ]]; then
+    pause_job_containers
   fi
 
   # noclobber: `>` в DUMP_COMMAND не может затереть уже существующий файл.
@@ -257,17 +287,9 @@ if [[ -n "$DUMP_DIR" ]]; then
 fi
 {% endraw %}
 
-# pause containers if set. Unpause делает только EXIT trap.
-if [[ -n "$PAUSE_CONTAINERS" ]]; then
-  eval "set -- $PAUSE_CONTAINERS"
-  for c in "$@"; do
-    if docker pause "$c"; then
-      paused_containers+=("$c")
-      paused_count=$((paused_count + 1))
-    else
-      fail "failed to pause container '$c'"
-    fi
-  done
+# Legacy jobs pause after dumping. Unpause is handled by the EXIT trap.
+if [[ "$DUMP_PAUSE_FIRST" != "true" ]]; then
+  pause_job_containers
 fi
 
 # backup запускается только если обязательный dump выше не завершил job

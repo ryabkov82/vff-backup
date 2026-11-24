@@ -10,8 +10,9 @@
 Эта роль используется в проекте **vff-backup** для публикации MinIO-сервера
 на внешнем домене, например:
 
-- **https://s3.vpn-for-friends.com** — REST/S3 API для restic и клиентов;
-- **https://s3-console.vpn-for-friends.com** — веб-консоль MinIO (UI).
+- **https://s3.portalbase.link** — REST/S3 API для restic и клиентов.
+
+Публичная веб-консоль MinIO не публикуется. Локальный интерфейс остаётся на `127.0.0.1:9001`.
 
 ---
 
@@ -19,9 +20,8 @@
 
 - установка пакетов `nginx`, `certbot`, `python3-certbot-nginx`;
 - генерация сертификатов Let’s Encrypt (`certonly --webroot`);
-- разворачивание двух виртуальных хостов:
-  - `s3.<domain>` — прокси на `127.0.0.1:9000`;
-  - `s3-console.<domain>` — прокси на `127.0.0.1:9001`;
+- разворачивание виртуального хоста S3 API (`s3.conf`) на `127.0.0.1:9000`;
+- публичный vhost консоли не создаётся, пока `s3_console_enabled` выключен;
 - автоматическое продление сертификатов;
 - базовая защита через HTTP Basic Auth (опционально);
 - Reload nginx при изменениях конфигурации.
@@ -32,8 +32,8 @@
 
 | Переменная | Описание | Пример |
 |-------------|-----------|--------|
-| `s3_domain` | Домен S3 API | `s3.vpn-for-friends.com` |
-| `s3_console_domain` | Домен консоли MinIO | `s3-console.vpn-for-friends.com` |
+| `s3_domain` | Домен S3 API | `s3.portalbase.link` |
+| `s3_console_enabled` | Публиковать консоль | `false` |
 | `certbot_email` | Email для Let’s Encrypt | `admin@vpn-for-friends.com` |
 | `nginx_cert_method` | `certbot` или `existing` | `certbot` |
 | `nginx_basic_auth_enabled` | Включить Basic Auth | `false` |
@@ -53,8 +53,7 @@ ansible-playbook -i ansible/hosts.ini ansible/playbooks/nginx.yml --limit monito
 ## 🔍 Проверка
 
 ```bash
-curl -I https://s3.vpn-for-friends.com
-curl -I https://s3-console.vpn-for-friends.com
+curl -I https://s3.portalbase.link
 sudo nginx -t
 sudo systemctl status nginx
 ```

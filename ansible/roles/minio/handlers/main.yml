@@ -4,4 +4,5 @@
     project_src: "{{ minio_compose_dir }}"
     state: present
     recreate: always
+    pull: never
     remove_orphans: true

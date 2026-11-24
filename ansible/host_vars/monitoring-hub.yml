@@ -1,10 +1,16 @@
 # домены для MinIO за Nginx
-s3_domain: "s3.vpn-for-friends.com"
+s3_domain: "s3.portalbase.link"
+# Публичная консоль закрыта. Имя остаётся только как MINIO_BROWSER_REDIRECT_URL
+# и не публикуется Nginx.
 s3_console_domain: "s3-console.vpn-for-friends.com"
+s3_console_enabled: false
 
 # сертификаты
 nginx_cert_method: certbot
 certbot_email: "you@vpn-for-friends.com"
+
+# Зафиксированный образ, с которым работает домашний MinIO.
+minio_image: "minio/minio@sha256:69b2ec208575b69597784255eec6fa6a2985ee9e1a47f4411a51f7f5fdd193a9"
 
 # MinIO публикуемые URL (для корректных редиректов)
 minio_public_s3_url: "https://{{ s3_domain }}"
