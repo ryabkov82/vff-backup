@@ -20,9 +20,10 @@ from verify_prepared_snapshot import MANIFEST, check_private, digest, unique, ve
 TABLES = frozenset(("accounts", "inboxes", "contacts", "conversations",
                     "messages", "attachments", "active_storage_blobs",
                     "active_storage_attachments"))
+POLLER_CONFIG = "telegram-poller/poller.rb"
 MIN_CONFIG = frozenset((".env", "compose.yaml",
                         "compose.operator-privacy.override.yaml",
-                        "telegram-poller/poller.rb"))
+                        POLLER_CONFIG))
 SERVICES = frozenset(("rails", "sidekiq", "telegram-business-poller",
                       "postgres", "redis"))
 REQUIRED_WRITERS = frozenset(("rails", "sidekiq", "telegram-business-poller"))
@@ -246,7 +247,7 @@ V2_CONFIG_FILES = frozenset((
     "compose.functional.business-test3.yaml",
     "compose.functional.business-test3-contact-link.override.yaml",
     "compose.functional.business-test3-contact-link-live-test.override.yaml",
-    "telegram-poller/encryption_preflight.rb", "telegram-poller/poller.rb",
+    "telegram-poller/encryption_preflight.rb", POLLER_CONFIG,
     "ops/operator_delivery_error_privacy.rb", "ops/operator_telegram_delivery_guard.rb",
     "ops/verify_fixture_vm205.rb", "ops/test_vm205_full_restore_e2e.py",
     "ops/test_vm205_link_restore.py", "ops/test_vm205_restore_e2e.py",
@@ -394,7 +395,7 @@ OPERATOR_FENCE = "delivery-fence.json"
 OPERATOR_CONFIG = frozenset((
     "compose.operator.yaml", ".env.operator", ".env.operator.business",
     ".env.operator.link", "telegram-poller/encryption_preflight.rb",
-    "telegram-poller/poller.rb", "web-drafter/contact_linker.rb",
+    POLLER_CONFIG, "web-drafter/contact_linker.rb",
     "ops/operator_delivery_error_privacy.rb", "ops/operator_telegram_delivery_guard.rb",
     "bin/chatwoot-link-verify", "bin/shm-operator-ca.crt"))
 OPERATOR_LIVE = "compose.operator-contact-link-live.override.yaml"
