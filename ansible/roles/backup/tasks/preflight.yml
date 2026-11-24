@@ -40,6 +40,26 @@
   loop: "{{ backup_jobs | default([]) }}"
   when: item.prepared_snapshot is defined
 
+- name: Require explicit manual operator-v3 profile for standalone Chatwoot
+  ansible.builtin.assert:
+    that:
+      - item.prepared_snapshot.profile | default('') == 'operator-v3'
+      - item.prepared_snapshot.profile_sha256 | default('') is match('^[0-9a-f]{64}$')
+      - not (item.prepared_snapshot.schedule_enabled | default(false))
+      - item.prepared_snapshot.scope | default('') == ('OPERATOR_COMPATIBILITY_TEST' if item.name == 'chatwoot-operator-compatibility' else 'OPERATOR_PROD')
+      - item.name is match('^chatwoot(-[A-Za-z0-9_-]+)?$')
+  loop: "{{ backup_jobs | default([]) }}"
+  when: item.prepared_snapshot is defined and (item.prepared_snapshot.kind | default('generic')) == 'chatwoot' and item.name != 'vm205-prepared-drill'
+
+- name: Keep VM205 v2 profile distinct
+  ansible.builtin.assert:
+    that:
+      - item.prepared_snapshot.profile | default('vm205-v2') == 'vm205-v2'
+      - item.prepared_snapshot.profile_sha256 is not defined
+      - item.prepared_snapshot.scope is not defined
+  loop: "{{ backup_jobs | default([]) }}"
+  when: item.name == 'vm205-prepared-drill'
+
 - name: Ensure deps
   ansible.builtin.package:
     name:

@@ -106,6 +106,9 @@ trap on_exit EXIT
 PREPARED_KIND=$(jq_job 'if .prepared_snapshot == null or (.prepared_snapshot | has("kind") | not) then "generic" else .prepared_snapshot.kind end')
 PREPARED_ROOT=$(jq_job '.prepared_snapshot.root // ""')
 PREPARED_PROGRAM=$(jq_job '.prepared_snapshot.program // ""')
+PREPARED_PROFILE=$(jq_job '.prepared_snapshot.profile // "vm205-v2"')
+PREPARED_PROFILE_SHA=$(jq_job '.prepared_snapshot.profile_sha256 // ""')
+PREPARED_SCOPE=$(jq_job '.prepared_snapshot.scope // ""')
 PREPARED_VERIFIER="{{ backup_prepared_verifier_path | default('/usr/local/libexec/vff-verify-prepared-snapshot') }}"
 CHATWOOT_VERIFIER="{{ backup_chatwoot_verifier_path | default('/usr/local/libexec/vff-backup/chatwoot_snapshot_contract.py') }}"
 if [[ "$JOB" =~ ^(chatwoot(-[A-Za-z0-9_-]+)?|vm205-prepared-drill)$ ]] &&
@@ -133,6 +136,19 @@ if [[ "$PREPARED_ENABLED" == true ]]; then
   if [[ "$PREPARED_KIND" == chatwoot ]]; then
     [[ -n "${prepared_paths[*]}" ]] || { echo "[ERROR] Chatwoot execution dependencies required" >&2; exit 1; }
     prepared_paths+=("$(dirname -- "$CHATWOOT_VERIFIER")/verify_prepared_snapshot.py")
+    if [[ "$JOB" == vm205-prepared-drill ]]; then
+      [[ "$PREPARED_PROFILE" == vm205-v2 && -z "$PREPARED_PROFILE_SHA" && -z "$PREPARED_SCOPE" ]] ||
+        { echo "[ERROR] VM205 requires v2 profile" >&2; exit 1; }
+    else
+      [[ "$PREPARED_PROFILE" == operator-v3 && "$PREPARED_PROFILE_SHA" =~ ^[0-9a-f]{64}$ &&
+         "$(jq_job '.prepared_snapshot.schedule_enabled // false')" == false ]] ||
+        { echo "[ERROR] Operator v3 requires pinned manual profile" >&2; exit 1; }
+      if [[ "$JOB" == chatwoot-operator-compatibility ]]; then
+        [[ "$PREPARED_SCOPE" == OPERATOR_COMPATIBILITY_TEST ]] || exit 1
+      else
+        [[ "$JOB" =~ ^chatwoot(-[A-Za-z0-9_-]+)?$ && "$PREPARED_SCOPE" == OPERATOR_PROD ]] || exit 1
+      fi
+    fi
   fi
   prepared_trust "$0" "{{ backup_env_file }}" "$PREPARED_ROOT" "$PREPARED_PROGRAM" "$PREPARED_VERIFIER" "${prepared_paths[@]}" || exit 1
 fi
@@ -284,7 +300,12 @@ if [[ "$PREPARED_ENABLED" == "true" ]]; then
      [[ -e "$prepared_dir/source/chatwoot.dump" || -e "$prepared_dir/chatwoot.dump" ]]; then
     fail "Chatwoot capture requires its semantic prepared verifier"
   fi
-  "$PREPARED_VERIFIER" "$prepared_dir" || fail "prepared snapshot verification failed"
+  if [[ "$PREPARED_KIND" == chatwoot && "$PREPARED_PROFILE" == operator-v3 ]]; then
+    "$PREPARED_VERIFIER" --operator-v3 "$PREPARED_PROFILE_SHA" "$PREPARED_SCOPE" "$prepared_dir" ||
+      fail "operator snapshot verification failed"
+  else
+    "$PREPARED_VERIFIER" "$prepared_dir" || fail "prepared snapshot verification failed"
+  fi
 fi
 
 # Обязательный дамп: без нового валидного файла restic не запускается.

@@ -386,11 +386,168 @@ def verify_prepared_capture(root):
     return count
 
 
+# Version 3 is the standalone operator component. It is not the full VM205
+# functional stack, and may never be selected implicitly by the v2 job.
+OPERATOR_SCOPES = frozenset(("OPERATOR_COMPATIBILITY_TEST", "OPERATOR_PROD"))
+OPERATOR_PROFILE = "operator-profile.json"
+OPERATOR_FENCE = "delivery-fence.json"
+OPERATOR_CONFIG = frozenset((
+    "compose.operator.yaml", ".env.operator", ".env.operator.business",
+    ".env.operator.link", "telegram-poller/encryption_preflight.rb",
+    "telegram-poller/poller.rb", "web-drafter/contact_linker.rb",
+    "ops/operator_delivery_error_privacy.rb", "ops/operator_telegram_delivery_guard.rb",
+    "bin/chatwoot-link-verify", "bin/shm-operator-ca.crt"))
+OPERATOR_LIVE = "compose.operator-contact-link-live.override.yaml"
+OPERATOR_TEST = "compose.operator-recovery-test.override.yaml"
+OPERATOR_CHECKS = frozenset(("postgres", "redis", "blob_integrity", "checkpoint",
+                            "native_encryption", "native_hmac", "delivery_fence",
+                            "isolated_network", "scratch_cleanup"))
+OPERATOR_IMAGES = {
+    **dict.fromkeys(REQUIRED_WRITERS, "chatwoot/chatwoot@sha256:04895c7bd0550d9e74b45b7202787b56f7ee4e891ebbde0c429c8c32901b97cf"),
+    "postgres": "pgvector/pgvector@sha256:0dd3149a06e4579a0d70d8fef9945636cd514005e7237deb27f9b67886f8dc4f",
+    "redis": "redis@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b",
+}
+
+
+def validate_operator_profile(profile):
+    require(isinstance(profile, dict) and set(profile) == {
+        "version", "scope", "source_host", "project", "config_root", "stage_root",
+        "account_id", "website_inbox_id", "business_inbox_id", "channel_id",
+        "bot_name", "contact_link_mode", "config_sha256", "images"},
+        "invalid operator profile")
+    require(type(profile["version"]) is int and profile["version"] == 3
+            and profile["scope"] in OPERATOR_SCOPES, "unsupported operator scope")
+    for key in ("source_host", "project", "bot_name"):
+        require(isinstance(profile[key], str) and
+                re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", profile[key]),
+                "invalid operator identity")
+    for key in ("config_root", "stage_root"):
+        value = profile[key]
+        require(isinstance(value, str) and value.startswith("/")
+                and safe_relative(value[1:]), "invalid operator path")
+    require(all(integer(profile[key]) and profile[key] > 0 for key in
+                ("account_id", "website_inbox_id", "business_inbox_id", "channel_id"))
+            and profile["website_inbox_id"] != profile["business_inbox_id"],
+            "invalid operator inbox identity")
+    require(profile["contact_link_mode"] in ("dry-run", "live"), "invalid operator linking mode")
+    expected = set(OPERATOR_CONFIG)
+    if profile["contact_link_mode"] == "live":
+        expected.add(OPERATOR_LIVE)
+    if profile["scope"] == "OPERATOR_COMPATIBILITY_TEST":
+        expected.add(OPERATOR_TEST)
+    config = profile["config_sha256"]
+    require(isinstance(config, dict) and set(config) == expected
+            and all(isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v)
+                    for v in config.values()), "invalid operator configuration inventory")
+    require(profile["images"] == OPERATOR_IMAGES, "operator image profile mismatch")
+    return profile
+
+
+def operator_file_inventory(profile, evidence, files, counts):
+    config = profile["config_sha256"]
+    for name, checksum in config.items():
+        path = files.get(CONFIG_PREFIX + name)
+        require(path is not None and path.stat().st_size > 0 and digest(path) == checksum,
+                "operator configuration mismatch")
+    validate_checkpoints(evidence, files)
+    require(set(evidence["business_offsets"]) == {str(profile["channel_id"])},
+            "operator checkpoint scope mismatch")
+    validate_blobs(evidence, counts, files)
+    blobs = {"storage/" + row["key"][:2] + "/" + row["key"][2:4] + "/" + row["key"]
+             for row in evidence["blobs"]}
+    expected = {MANIFEST, OPERATOR_PROFILE, OPERATOR_FENCE, EVIDENCE, CHATWOOT_DUMP, "redis.rdb"}
+    expected.update(CONFIG_PREFIX + name for name in config)
+    expected.update("business-state/channel-" + key + ".offset"
+                    for key in evidence["business_offsets"])
+    require(set(files) == expected | blobs, "undeclared operator artifact")
+    for name, header in ((CHATWOOT_DUMP, b"PGDMP"), ("redis.rdb", b"REDIS")):
+        with files[name].open("rb") as stream:
+            require(stream.read(len(header)) == header and files[name].stat().st_size > 9,
+                    "invalid native operator archive")
+
+
+def verify_operator_capture(root, expected_sha, expected_scope):
+    """Only an explicitly pinned v3 profile can authorize this verifier."""
+    require(expected_scope in OPERATOR_SCOPES and
+            re.fullmatch(r"[0-9a-f]{64}", expected_sha), "operator profile pin required")
+    root = Path(root)
+    count = verify(root)
+    files = inventory(root)
+    profile_file = files[OPERATOR_PROFILE]
+    require(profile_file.stat().st_size <= 65536 and digest(profile_file) == expected_sha,
+            "operator profile hash mismatch")
+    profile = validate_operator_profile(json.loads(profile_file.read_text(), object_pairs_hook=unique))
+    require(profile["scope"] == expected_scope, "operator scope mismatch")
+    require(files[EVIDENCE].stat().st_size <= MAX_EVIDENCE, "operator evidence too large")
+    evidence = json.loads(files[EVIDENCE].read_text(), object_pairs_hook=unique)
+    require(isinstance(evidence, dict) and set(evidence) == {
+        "version", "scope", "status", "profile_sha256", "counts", "dump_counts",
+        "business_offsets", "blobs", "unresolved_attachment_refs", "pending_delivery_jobs",
+        "ingress_fenced", "writer_states", "other_active_writers", "restore_checks",
+        "restored_outbound_started", "source_writers_left_stopped"},
+        "invalid operator capture evidence")
+    require(type(evidence["version"]) is int and evidence["version"] == 3
+            and evidence["scope"] == expected_scope
+            and evidence["status"] == "PASS_OPERATOR_NATIVE_RESTORE"
+            and evidence["profile_sha256"] == expected_sha, "operator receipt mismatch")
+    validate_writer_state(evidence)
+    require(evidence["restored_outbound_started"] is False
+            and evidence["source_writers_left_stopped"] is True,
+            "unsafe operator lifecycle")
+    require(type(evidence["unresolved_attachment_refs"]) is int
+            and evidence["unresolved_attachment_refs"] == 0
+            and type(evidence["pending_delivery_jobs"]) is int
+            and evidence["pending_delivery_jobs"] == 0, "operator data not quiescent")
+    checks = evidence["restore_checks"]
+    require(isinstance(checks, dict) and set(checks) == OPERATOR_CHECKS
+            and all(v is True for v in checks.values()), "operator restore incomplete")
+    counts = validate_counts(evidence)
+    operator_file_inventory(profile, evidence, files, counts)
+    allowed_dirs = {"storage"} | {parent.as_posix() for name in files
+        for parent in PurePosixPath(name).parents if parent != PurePosixPath(".")}
+    for parent, dirs, _ in os.walk(root, followlinks=False, onerror=reject_walk_error):
+        for name in dirs:
+            require((Path(parent) / name).relative_to(root).as_posix() in allowed_dirs,
+                    "undeclared operator directory")
+    validate_operator_delivery_fence(files[OPERATOR_FENCE])
+    return count
+
+
+def validate_operator_delivery_fence(path):
+    require(path.stat().st_size <= 4096, "oversized operator delivery fence")
+    state = json.loads(path.read_text(), object_pairs_hook=unique)
+    require(isinstance(state, dict) and set(state) == {
+        "source_db", "restored_db", "source_redis", "restored_redis"},
+        "invalid operator delivery fence")
+    keys = {"channels", "scoped_inboxes", "outgoing", "unconfirmed", "failed",
+            "invalid_status", "invalid_ack", "reservations"}
+    source, restored = state["source_db"], state["restored_db"]
+    require(all(isinstance(row, dict) and set(row) == keys and
+                all(integer(n) for n in row.values()) for row in (source, restored))
+            and source == restored
+            and source["channels"] == source["scoped_inboxes"] == 1
+            and all(source[k] == 0 for k in keys - {"channels", "scoped_inboxes", "outgoing"}),
+            "pending or mismatched operator delivery")
+    redis = {"queued", "working", "retry", "scheduled", "maintenance_scheduled", "dead", "processes"}
+    for name in ("source_redis", "restored_redis"):
+        value = state[name]
+        require(isinstance(value, dict) and set(value) == redis
+                and all(integer(n) for n in value.values())
+                and all(value[k] == 0 for k in redis - {"maintenance_scheduled"}),
+                "pending operator Redis delivery")
+    require(state["source_redis"] == state["restored_redis"],
+            "operator Redis maintenance inventory drift")
+
+
+
 def main():
     try:
         if len(sys.argv) == 3 and sys.argv[1] == "--contract-only":
             count = verify_restored(Path(sys.argv[2]))
             print(json.dumps({"status": "PASS_CONTRACT_ONLY", "files": count}))
+        elif len(sys.argv) == 5 and sys.argv[1] == "--operator-v3":
+            count = verify_operator_capture(Path(sys.argv[4]), sys.argv[2], sys.argv[3])
+            print(json.dumps({"status": "PASS_OPERATOR_NATIVE_CAPTURE_MANIFEST", "files": count}))
         elif len(sys.argv) == 2:
             count = verify_prepared_capture(Path(sys.argv[1]))
             print(json.dumps({"status": "PASS_VERIFIED_CAPTURE_MANIFEST", "files": count}))
