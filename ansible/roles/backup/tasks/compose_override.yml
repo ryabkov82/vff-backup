@@ -1,4 +1,4 @@
-# Определяем все джобы, которые требуют override (db_dump.container)
+# Only jobs with an enabled container-side database dump need a Compose change.
 - name: Select jobs requiring compose override
   ansible.builtin.set_fact:
     backup_jobs_needing_override: >-
@@ -10,52 +10,40 @@
          | list }}
   when: backup_jobs is defined
 
-# Если джобов нет — завершаем
-- name: Skip compose override when nothing to render
-  ansible.builtin.meta: noop
-  when: (backup_jobs_needing_override | default([])) | length == 0
+- name: Configure legacy container dump volume
+  when: (backup_jobs_needing_override | default([])) | length > 0
+  block:
+    - name: Determine compose_dir
+      ansible.builtin.set_fact:
+        backup_compose_dir_resolved: "{{ backup_compose_dir }}"
 
+    - name: Check docker-compose.yml exists
+      ansible.builtin.stat:
+        path: "{{ backup_compose_dir_resolved }}/docker-compose.yml"
+      register: compose_yml_stat
 
-# Проверяем наличие docker-compose.yml для единственного compose_dir
-- name: Determine compose_dir
-  ansible.builtin.set_fact:
-    backup_compose_dir_resolved: "{{ backup_compose_dir }}"
+    - name: Fail if main compose file is missing
+      ansible.builtin.fail:
+        msg: >-
+          docker-compose.yml not found at {{ backup_compose_dir_resolved }}
+      when: not compose_yml_stat.stat.exists
 
-- name: Check docker-compose.yml exists
-  ansible.builtin.stat:
-    path: "{{ backup_compose_dir_resolved }}/docker-compose.yml"
-  register: compose_yml_stat
+    - name: Render unified docker-compose.override.yml
+      vars:
+        db_containers: "{{ backup_jobs_needing_override | map(attribute='db_dump.container') | list }}"
+        dump_dirs: "{{ backup_jobs_needing_override | map(attribute='db_dump.dump_dir') | list }}"
+      ansible.builtin.template:
+        src: "docker-compose.override.backup.yml.j2"
+        dest: "{{ backup_compose_dir_resolved }}/docker-compose.override.yml"
+        owner: root
+        group: root
+        mode: "0644"
 
-- name: Fail if main compose file is missing
-  ansible.builtin.fail:
-    msg: >
-      docker-compose.yml not found at {{ backup_compose_dir_resolved }}
-  when: not compose_yml_stat.stat.exists
-
-# Рендерим ЕДИНСТВЕННЫЙ override-файл
-# docker-compose.override.yml (стандартное имя)
-- name: Render unified docker-compose.override.yml
-  vars:
-    # Это либо один контейнер, либо список контейнеров
-    db_containers: "{{ backup_jobs_needing_override
-                       | map(attribute='db_dump.container')
-                       | list }}"
-    dump_dirs: "{{ backup_jobs_needing_override
-                   | map(attribute='db_dump.dump_dir')
-                   | list }}"
-  ansible.builtin.template:
-    src: "docker-compose.override.backup.yml.j2"
-    dest: "{{ backup_compose_dir_resolved }}/docker-compose.override.yml"
-    owner: root
-    group: root
-    mode: "0644"
-
-# Просто запускаем docker compose up -d (override подхватится автоматом)
-- name: Bring up services with unified override (docker compose up -d)
-  community.docker.docker_compose_v2:
-    project_src: "{{ backup_compose_dir_resolved }}"
-    state: present
-    build: never
-    pull: policy
-    services: []
-    remove_orphans: true
+    - name: Bring up services with unified override (docker compose up -d)
+      community.docker.docker_compose_v2:
+        project_src: "{{ backup_compose_dir_resolved }}"
+        state: present
+        build: never
+        pull: policy
+        services: []
+        remove_orphans: true

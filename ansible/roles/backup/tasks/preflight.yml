@@ -12,6 +12,54 @@
       }}
   when: (backup_jobs_map | default({})) is mapping
 
+- name: Require semantic verification for reserved Chatwoot job names
+  ansible.builtin.assert:
+    that:
+      - item.prepared_snapshot is defined
+      - (item.prepared_snapshot.kind | default('generic')) == 'chatwoot'
+  loop: "{{ backup_jobs | default([]) }}"
+  when: item.name is match('^(chatwoot(-[A-Za-z0-9_-]+)?|vm205-prepared-drill)$')
+
+- name: Validate host-prepared snapshots before installing or scheduling
+  ansible.builtin.assert:
+    that:
+      - item.prepared_snapshot is mapping
+      - item.prepared_snapshot.schedule_enabled is not defined or item.prepared_snapshot.schedule_enabled is boolean
+      - (item.prepared_snapshot.kind | default('generic')) in ['generic', 'chatwoot']
+      - (item.prepared_snapshot.trusted_paths | default([])) is sequence
+      - (item.prepared_snapshot.trusted_paths | default([])) is not string
+      - (item.prepared_snapshot.trusted_paths | default([])) is not mapping
+      - (item.prepared_snapshot.kind | default('generic')) != 'chatwoot' or (item.prepared_snapshot.trusted_paths | default([]) | length > 0)
+      - item.prepared_snapshot.root is match('^/var/backups/[A-Za-z0-9_-]+$')
+      - item.prepared_snapshot.program is match('^/usr/local/(bin|sbin|libexec)/[A-Za-z0-9_.-]+$')
+      - item.db_dump is not defined
+      - item.compose_dir is not defined
+      - (item.paths | default([])) | length == 0
+      - (item.containers | default([])) | length == 0
+      - (item.exclude_paths | default([])) | length == 0
+  loop: "{{ backup_jobs | default([]) }}"
+  when: item.prepared_snapshot is defined
+
+- name: Require explicit manual operator-v3 profile for standalone Chatwoot
+  ansible.builtin.assert:
+    that:
+      - item.prepared_snapshot.profile | default('') == 'operator-v3'
+      - item.prepared_snapshot.profile_sha256 | default('') is match('^[0-9a-f]{64}$')
+      - not (item.prepared_snapshot.schedule_enabled | default(false))
+      - item.prepared_snapshot.scope | default('') == ('OPERATOR_COMPATIBILITY_TEST' if item.name == 'chatwoot-operator-compatibility' else 'OPERATOR_PROD')
+      - item.name is match('^chatwoot(-[A-Za-z0-9_-]+)?$')
+  loop: "{{ backup_jobs | default([]) }}"
+  when: item.prepared_snapshot is defined and (item.prepared_snapshot.kind | default('generic')) == 'chatwoot' and item.name != 'vm205-prepared-drill'
+
+- name: Keep VM205 v2 profile distinct
+  ansible.builtin.assert:
+    that:
+      - item.prepared_snapshot.profile | default('vm205-v2') == 'vm205-v2'
+      - item.prepared_snapshot.profile_sha256 is not defined
+      - item.prepared_snapshot.scope is not defined
+  loop: "{{ backup_jobs | default([]) }}"
+  when: item.name == 'vm205-prepared-drill'
+
 - name: Ensure deps
   ansible.builtin.package:
     name:
@@ -19,7 +67,26 @@
       - jq
       - bash
       - restic
+      - python3
+      - util-linux
     state: present
+
+# Run controller-reviewed code directly, before templating or sourcing the
+# environment or installing root executables. Missing installation paths are
+# allowed only below a protected existing parent.
+- name: Check prepared installation path ancestry
+  ansible.builtin.command:
+    argv: "{{ ['/usr/bin/python3', '-I', '-c', lookup('ansible.builtin.file', role_path + '/files/prepared_trust.py'), '--allow-missing', backup_bin_path, backup_env_dir, backup_env_file, '/usr/local/libexec/vff-backup', '/usr/local/libexec/vff-verify-prepared-snapshot', item.prepared_snapshot.root] }}"
+  changed_when: false
+  loop: "{{ backup_jobs | default([]) }}"
+  when: item.prepared_snapshot is defined
+
+- name: Check existing prepared execution and configuration dependencies
+  ansible.builtin.command:
+    argv: "{{ ['/usr/bin/python3', '-I', '-c', lookup('ansible.builtin.file', role_path + '/files/prepared_trust.py'), item.prepared_snapshot.program] + (item.prepared_snapshot.trusted_paths | default([])) }}"
+  changed_when: false
+  loop: "{{ backup_jobs | default([]) }}"
+  when: item.prepared_snapshot is defined
 
 - name: Ensure textfile dirs exist (readable by node_exporter)
   when: backup_enable_metrics | bool

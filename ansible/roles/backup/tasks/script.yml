@@ -1,4 +1,6 @@
 - name: Install backup script
+  vars:
+    backup_prepared_trust_source: "{{ lookup('ansible.builtin.file', role_path + '/files/prepared_trust.py') }}"
   ansible.builtin.template:
     src: vff-backup.sh.j2
     dest: "{{ backup_bin_path }}"
