@@ -555,6 +555,57 @@ ONLINE_POLICY = {
     "external_delivery": "ISOLATED_UNTIL_OPERATOR_RECONCILIATION",
     "ambiguous_telegram_sends": "QUARANTINE_NO_RETRY",
 }
+JOURNAL_POLICY = {**ONLINE_POLICY, "checkpoint": "POSTGRES_JOURNAL_RECONCILE_BEFORE_ACTIVATION"}
+JOURNAL_BACKEND_KEY = "VFF_TELEGRAM_CHECKPOINT_BACKEND"
+JOURNAL_CONNECTION_KEY = "VFF_TELEGRAM_BUSINESS_CONNECTION_ID"
+JOURNAL_ENV = ".env.operator.business"
+MAX_JOURNAL_ID = 2**63 - 1
+
+
+def operator_checkpoint_config(config, profile):
+    """Read only the two scoped declarations, never return credentials."""
+    selected = {}
+    for name in (".env.operator", JOURNAL_ENV, ".env.operator.link"):
+        for line in (config / name).read_text().splitlines():
+            key, sep, value = line.partition("=")
+            if sep and key in (JOURNAL_BACKEND_KEY, JOURNAL_CONNECTION_KEY):
+                require(name == JOURNAL_ENV and key not in selected,
+                        "ambiguous journal configuration")
+                selected[key] = value
+    backend = selected.get(JOURNAL_BACKEND_KEY, "file")
+    require(backend in ("file", "postgres"), "invalid checkpoint backend")
+    if backend == "file":
+        return backend, None
+    connection = selected.get(JOURNAL_CONNECTION_KEY, "")
+    require(re.fullmatch(r"[!-~]{1,256}", connection), "invalid journal connection scope")
+    scope = [profile["channel_id"], profile["account_id"], profile["business_inbox_id"],
+             profile["bot_name"].lower(), connection]
+    fingerprint = hashlib.sha256(json.dumps(scope, separators=(",", ":"),
+                                           ensure_ascii=False).encode()).hexdigest()
+    return backend, fingerprint
+
+
+def validate_online_journal(journal, profile, fingerprint):
+    require(isinstance(journal, dict) and set(journal) == {
+        "channel_id", "scope_sha256", "next_offset", "applied_count",
+        "max_applied_id", "pending_update_id", "pending_payload_sha256",
+        "pending_cipher_sha256"}, "invalid journal inventory")
+    require(type(journal["channel_id"]) is int and journal["channel_id"] == profile["channel_id"]
+            and journal["scope_sha256"] == fingerprint
+            and integer(journal["next_offset"]) and journal["next_offset"] <= MAX_JOURNAL_ID
+            and integer(journal["applied_count"]), "invalid journal scope/cursor")
+    maximum, offset = journal["max_applied_id"], journal["next_offset"]
+    require((journal["applied_count"] == 0 and maximum is None) or
+            (journal["applied_count"] > 0 and integer(maximum) and maximum + 1 == offset),
+            "applied journal/cursor mismatch")
+    pending = journal["pending_update_id"]
+    hashes = (journal["pending_payload_sha256"], journal["pending_cipher_sha256"])
+    require((pending is None and hashes == (None, None)) or
+            (integer(pending) and offset <= pending < MAX_JOURNAL_ID
+             and all(isinstance(value, str) and re.fullmatch(SHA256_PATTERN, value) for value in hashes)),
+            "invalid pending journal receipt")
+
+
 ONLINE_DELIVERY_KEYS = frozenset(("channels", "scoped_inboxes", "outgoing", "unconfirmed",
                                   "failed", "invalid_status", "invalid_ack", "reservations"))
 
@@ -582,18 +633,21 @@ def verify_operator_online_capture(root, expected_sha, expected_scope):
     require(profile["scope"] == expected_scope, "online scope mismatch")
     require(files[EVIDENCE].stat().st_size <= MAX_EVIDENCE, "online evidence too large")
     evidence = json.loads(files[EVIDENCE].read_text(), object_pairs_hook=unique)
+    backend, fingerprint = operator_checkpoint_config(root / "config", profile)
+    journal_mode = backend == "postgres"
+    checkpoint_field = "journal" if journal_mode else "checkpoint_observations"
     require(isinstance(evidence, dict) and set(evidence) == {
         "version", "mode", "scope", "status", "profile_sha256", "counts", "blobs",
-        "snapshot_epoch_seconds", "checkpoint_observations", "delivery",
+        "snapshot_epoch_seconds", checkpoint_field, "delivery",
         "unresolved_attachment_refs", "source_writers_running", "recovery_policy"},
         "invalid online evidence")
-    require(type(evidence["version"]) is int and evidence["version"] == 1
+    require(type(evidence["version"]) is int and evidence["version"] == (2 if journal_mode else 1)
             and evidence["mode"] == "operator-online-v1"
             and evidence["scope"] == expected_scope
             and evidence["status"] == "PASS_OPERATOR_ONLINE_CAPTURE"
             and evidence["profile_sha256"] == expected_sha
             and evidence["source_writers_running"] is True
-            and evidence["recovery_policy"] == ONLINE_POLICY
+            and evidence["recovery_policy"] == (JOURNAL_POLICY if journal_mode else ONLINE_POLICY)
             and integer(evidence["snapshot_epoch_seconds"])
             and evidence["snapshot_epoch_seconds"] > 0
             and integer(evidence["unresolved_attachment_refs"])
@@ -604,13 +658,16 @@ def verify_operator_online_capture(root, expected_sha, expected_scope):
             and counts["accounts"] >= 1
             and (not counts["active_storage_attachments"] or counts["active_storage_blobs"] > 0),
             "invalid online table inventory")
-    observations = evidence["checkpoint_observations"]
-    require(isinstance(observations, dict) and set(observations) == {
-        "channel", "before_db_snapshot", "after_copy"}
-            and observations["channel"] == str(profile["channel_id"])
-            and all(integer(observations[k]) and observations[k] < 10**19
-                    for k in ("before_db_snapshot", "after_copy")),
-            "invalid diagnostic checkpoint observation")
+    if journal_mode:
+        validate_online_journal(evidence["journal"], profile, fingerprint)
+    else:
+        observations = evidence["checkpoint_observations"]
+        require(isinstance(observations, dict) and set(observations) == {
+            "channel", "before_db_snapshot", "after_copy"}
+                and observations["channel"] == str(profile["channel_id"])
+                and all(integer(observations[k]) and observations[k] < 10**19
+                        for k in ("before_db_snapshot", "after_copy")),
+                "invalid diagnostic checkpoint observation")
     validate_online_delivery(evidence["delivery"])
     for name, checksum in profile["config_sha256"].items():
         file = files.get(CONFIG_PREFIX + name)

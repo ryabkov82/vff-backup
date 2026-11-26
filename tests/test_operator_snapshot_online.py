@@ -1,4 +1,5 @@
 """Online archive format is distinct from manual v3 (structural fixtures)."""
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -26,6 +27,28 @@ def online_fixture(root):
         "delivery": state, "unresolved_attachment_refs": 0,
         "source_writers_running": True, "recovery_policy": dict(c.ONLINE_POLICY),
     }
+    put_json(root, c.EVIDENCE, evidence)
+    return pin, scope, evidence
+
+
+
+def journal_fixture(root, pending=True):
+    _, scope, evidence = online_fixture(root)
+    profile = json.loads((root / c.OPERATOR_PROFILE).read_text())
+    business = b"VFF_TELEGRAM_CHECKPOINT_BACKEND=postgres\nVFF_TELEGRAM_BUSINESS_CONNECTION_ID=synthetic-connection\n"
+    put(root, "config/.env.operator.business", business)
+    profile["config_sha256"][".env.operator.business"] = hashlib.sha256(business).hexdigest()
+    put_json(root, c.OPERATOR_PROFILE, profile)
+    pin = c.digest(root / c.OPERATOR_PROFILE)
+    backend, fingerprint = c.operator_checkpoint_config(root / "config", profile)
+    assert backend == "postgres"
+    evidence.pop("checkpoint_observations")
+    evidence.update(version=2, profile_sha256=pin, recovery_policy=dict(c.JOURNAL_POLICY),
+        journal={"channel_id": profile["channel_id"], "scope_sha256": fingerprint,
+                 "next_offset": 104, "applied_count": 1, "max_applied_id": 103,
+                 "pending_update_id": 104 if pending else None,
+                 "pending_payload_sha256": "a"*64 if pending else None,
+                 "pending_cipher_sha256": "b"*64 if pending else None})
     put_json(root, c.EVIDENCE, evidence)
     return pin, scope, evidence
 
@@ -74,6 +97,40 @@ class OnlineContractTests(unittest.TestCase):
                     evidence["source_writers_running"] = False
                 else:
                     evidence["delivery"]["unconfirmed"] = 2
+                put_json(root, c.EVIDENCE, evidence)
+                seal(root)
+                with self.assertRaises((ValueError, KeyError)):
+                    c.verify_operator_online_capture(root, pin, scope)
+
+    def test_journal_online_snapshot_and_backward_compatibility(self):
+        for pending in (True, False):
+            with self.subTest(pending=pending), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                pin, scope, _ = journal_fixture(root, pending)
+                count = seal(root)
+                self.assertEqual(c.verify_operator_online_capture(root, pin, scope), count)
+
+    def test_journal_snapshot_rejects_stale_file_or_inconsistent_receipt(self):
+        for case in ("file", "scope", "cursor", "pending", "hash", "policy", "version"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                pin, scope, evidence = journal_fixture(root)
+                journal = evidence["journal"]
+                if case == "file":
+                    evidence["checkpoint_observations"] = {"channel": "47", "before_db_snapshot": 103,
+                                                            "after_copy": 103}
+                elif case == "scope":
+                    journal["scope_sha256"] = "0"*64
+                elif case == "cursor":
+                    journal["next_offset"] = 105
+                elif case == "pending":
+                    journal["pending_update_id"] = 103
+                elif case == "hash":
+                    journal["pending_cipher_sha256"] = None
+                elif case == "policy":
+                    evidence["recovery_policy"] = dict(c.ONLINE_POLICY)
+                else:
+                    evidence["version"] = 1
                 put_json(root, c.EVIDENCE, evidence)
                 seal(root)
                 with self.assertRaises((ValueError, KeyError)):
