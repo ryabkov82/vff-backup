@@ -1,0 +1,27 @@
+[Unit]
+Description=VFF replicate successful %i backup to VM200
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/vff-backup/restic.env
+LoadCredential=vm200.env:/etc/vff-backup-vm200/s3.env
+LoadCredential=vm200.pass:/etc/vff-backup-vm200/restic.pass
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/vff-backup-replicate-vm200 %i
+User=root
+Group=root
+UMask=0077
+TimeoutStartSec=2h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+ReadWritePaths=/var/cache/restic /var/lib/node_exporter/textfile
