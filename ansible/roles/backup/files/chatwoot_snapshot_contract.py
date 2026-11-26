@@ -400,6 +400,10 @@ OPERATOR_CONFIG = frozenset((
     "bin/chatwoot-link-verify", "bin/shm-operator-ca.crt"))
 OPERATOR_LIVE = "compose.operator-contact-link-live.override.yaml"
 OPERATOR_TEST = "compose.operator-recovery-test.override.yaml"
+OPERATOR_SMTP = ".env.operator.smtp"
+OPERATOR_BOOTSTRAP = "compose.bootstrap.yaml"
+# Explicit operational extensions; no arbitrary environment/Compose files.
+OPERATOR_CONFIG_EXTENSIONS = frozenset((OPERATOR_SMTP, OPERATOR_BOOTSTRAP))
 OPERATOR_CHECKS = frozenset(("postgres", "redis", "blob_integrity", "checkpoint",
                             "native_encryption", "native_hmac", "delivery_fence",
                             "isolated_network", "scratch_cleanup"))
@@ -437,7 +441,9 @@ def validate_operator_profile(profile):
     if profile["scope"] == "OPERATOR_COMPATIBILITY_TEST":
         expected.add(OPERATOR_TEST)
     config = profile["config_sha256"]
-    require(isinstance(config, dict) and set(config) == expected
+    require(isinstance(config, dict), "invalid operator configuration inventory")
+    expected.update(OPERATOR_CONFIG_EXTENSIONS.intersection(config))
+    require(set(config) == expected
             and all(isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v)
                     for v in config.values()), "invalid operator configuration inventory")
     require(profile["images"] == OPERATOR_IMAGES, "operator image profile mismatch")
