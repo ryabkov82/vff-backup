@@ -619,20 +619,7 @@ def validate_online_delivery(state):
             "invalid online delivery inventory")
 
 
-def verify_operator_online_capture(root, expected_sha, expected_scope):
-    """Verify a DB-snapshot/attachment-closed archive, not a quiesced v3 archive."""
-    require(expected_scope in OPERATOR_SCOPES and
-            re.fullmatch(SHA256_PATTERN, expected_sha), "online profile pin required")
-    root = Path(root)
-    count = verify(root)
-    files = inventory(root)
-    profile_file = files[OPERATOR_PROFILE]
-    require(profile_file.stat().st_size <= 65536 and digest(profile_file) == expected_sha,
-            "online profile hash mismatch")
-    profile = validate_operator_profile(json.loads(profile_file.read_text(), object_pairs_hook=unique))
-    require(profile["scope"] == expected_scope, "online scope mismatch")
-    require(files[EVIDENCE].stat().st_size <= MAX_EVIDENCE, "online evidence too large")
-    evidence = json.loads(files[EVIDENCE].read_text(), object_pairs_hook=unique)
+def validate_online_evidence(root, evidence, profile, expected_sha, expected_scope):
     backend, fingerprint = operator_checkpoint_config(root / "config", profile)
     journal_mode = backend == "postgres"
     checkpoint_field = "journal" if journal_mode else "checkpoint_observations"
@@ -669,6 +656,24 @@ def verify_operator_online_capture(root, expected_sha, expected_scope):
                         for k in ("before_db_snapshot", "after_copy")),
                 "invalid diagnostic checkpoint observation")
     validate_online_delivery(evidence["delivery"])
+    return counts
+
+
+def verify_operator_online_capture(root, expected_sha, expected_scope):
+    """Verify a DB-snapshot/attachment-closed archive, not a quiesced v3 archive."""
+    require(expected_scope in OPERATOR_SCOPES and
+            re.fullmatch(SHA256_PATTERN, expected_sha), "online profile pin required")
+    root = Path(root)
+    count = verify(root)
+    files = inventory(root)
+    profile_file = files[OPERATOR_PROFILE]
+    require(profile_file.stat().st_size <= 65536 and digest(profile_file) == expected_sha,
+            "online profile hash mismatch")
+    profile = validate_operator_profile(json.loads(profile_file.read_text(), object_pairs_hook=unique))
+    require(profile["scope"] == expected_scope, "online scope mismatch")
+    require(files[EVIDENCE].stat().st_size <= MAX_EVIDENCE, "online evidence too large")
+    evidence = json.loads(files[EVIDENCE].read_text(), object_pairs_hook=unique)
+    counts = validate_online_evidence(root, evidence, profile, expected_sha, expected_scope)
     for name, checksum in profile["config_sha256"].items():
         file = files.get(CONFIG_PREFIX + name)
         require(file is not None and file.stat().st_size > 0 and digest(file) == checksum,
