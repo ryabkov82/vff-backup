@@ -108,6 +108,28 @@ class PreparedJobTests(unittest.TestCase):
         self.assertNotEqual(self.run_job().returncode, 0)
         self.assertFalse(self.harness._restic_calls())
 
+    def test_online_job_profile_is_explicit_and_disjoint(self):
+        for name, scope in (("chatwoot-online", "OPERATOR_PROD"),
+                            ("chatwoot-operator-online-compatibility", "OPERATOR_COMPATIBILITY_TEST")):
+            self.job["name"] = name
+            self.job["prepared_snapshot"].update(kind="chatwoot", profile="operator-online-v1",
+                scope=scope, profile_sha256="a"*64, trusted_paths=[str(self.modules)],
+                schedule_enabled=True)
+            self.render()
+            result = self.run_job()
+            # Generic fixture cannot pass the online semantic verification.
+            self.assertIn("operator online snapshot verification failed", result.stderr)
+            self.assertFalse(self.harness._restic_calls())
+            for field, value in (("profile", "operator-v3"), ("scope", "WRONG"),
+                                 ("profile_sha256", "invalid")):
+                with self.subTest(name=name, field=field):
+                    saved = self.job["prepared_snapshot"][field]
+                    self.job["prepared_snapshot"][field] = value
+                    self.render()
+                    self.assertNotEqual(self.run_job().returncode, 0)
+                    self.assertFalse(self.harness._restic_calls())
+                    self.job["prepared_snapshot"][field] = saved
+
     def test_chatwoot_requires_declared_execution_dependencies(self):
         self.job["name"] = "vm205-prepared-drill"
         self.job["prepared_snapshot"]["kind"] = "chatwoot"

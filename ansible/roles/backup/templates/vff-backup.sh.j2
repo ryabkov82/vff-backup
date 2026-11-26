@@ -139,6 +139,14 @@ if [[ "$PREPARED_ENABLED" == true ]]; then
     if [[ "$JOB" == vm205-prepared-drill ]]; then
       [[ "$PREPARED_PROFILE" == vm205-v2 && -z "$PREPARED_PROFILE_SHA" && -z "$PREPARED_SCOPE" ]] ||
         { echo "[ERROR] VM205 requires v2 profile" >&2; exit 1; }
+    elif [[ "$JOB" == chatwoot-online || "$JOB" == chatwoot-operator-online-compatibility ]]; then
+      [[ "$PREPARED_PROFILE" == operator-online-v1 && "$PREPARED_PROFILE_SHA" =~ ^[0-9a-f]{64}$ ]] ||
+        { echo "[ERROR] Online Chatwoot requires its pinned profile" >&2; exit 1; }
+      if [[ "$JOB" == chatwoot-operator-online-compatibility ]]; then
+        [[ "$PREPARED_SCOPE" == OPERATOR_COMPATIBILITY_TEST ]] || exit 1
+      else
+        [[ "$PREPARED_SCOPE" == OPERATOR_PROD ]] || exit 1
+      fi
     else
       [[ "$PREPARED_PROFILE" == operator-v3 && "$PREPARED_PROFILE_SHA" =~ ^[0-9a-f]{64}$ &&
          "$(jq_job '.prepared_snapshot.schedule_enabled // false')" == false ]] ||
@@ -303,6 +311,9 @@ if [[ "$PREPARED_ENABLED" == "true" ]]; then
   if [[ "$PREPARED_KIND" == chatwoot && "$PREPARED_PROFILE" == operator-v3 ]]; then
     "$PREPARED_VERIFIER" --operator-v3 "$PREPARED_PROFILE_SHA" "$PREPARED_SCOPE" "$prepared_dir" ||
       fail "operator snapshot verification failed"
+  elif [[ "$PREPARED_KIND" == chatwoot && "$PREPARED_PROFILE" == operator-online-v1 ]]; then
+    "$PREPARED_VERIFIER" --operator-online-v1 "$PREPARED_PROFILE_SHA" "$PREPARED_SCOPE" "$prepared_dir" ||
+      fail "operator online snapshot verification failed"
   else
     "$PREPARED_VERIFIER" "$prepared_dir" || fail "prepared snapshot verification failed"
   fi

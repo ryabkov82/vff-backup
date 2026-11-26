@@ -547,6 +547,91 @@ def validate_operator_delivery_fence(path):
 
 
 
+ONLINE_POLICY = {
+    "redis": "EMPTY_ON_RESTORE",
+    "checkpoint": "OBSERVATION_ONLY",
+    "external_delivery": "ISOLATED_UNTIL_OPERATOR_RECONCILIATION",
+    "ambiguous_telegram_sends": "QUARANTINE_NO_RETRY",
+}
+ONLINE_DELIVERY_KEYS = frozenset(("channels", "scoped_inboxes", "outgoing", "unconfirmed",
+                                  "failed", "invalid_status", "invalid_ack", "reservations"))
+
+
+def validate_online_delivery(state):
+    require(isinstance(state, dict) and set(state) == ONLINE_DELIVERY_KEYS
+            and all(integer(n) for n in state.values())
+            and state["channels"] == state["scoped_inboxes"] == 1
+            and all(state[k] <= state["outgoing"]
+                    for k in ONLINE_DELIVERY_KEYS - {"channels", "scoped_inboxes", "outgoing"}),
+            "invalid online delivery inventory")
+
+
+def verify_operator_online_capture(root, expected_sha, expected_scope):
+    """Verify a DB-snapshot/attachment-closed archive, not a quiesced v3 archive."""
+    require(expected_scope in OPERATOR_SCOPES and
+            re.fullmatch(r"[0-9a-f]{64}", expected_sha), "online profile pin required")
+    root = Path(root)
+    count = verify(root)
+    files = inventory(root)
+    profile_file = files[OPERATOR_PROFILE]
+    require(profile_file.stat().st_size <= 65536 and digest(profile_file) == expected_sha,
+            "online profile hash mismatch")
+    profile = validate_operator_profile(json.loads(profile_file.read_text(), object_pairs_hook=unique))
+    require(profile["scope"] == expected_scope, "online scope mismatch")
+    require(files[EVIDENCE].stat().st_size <= MAX_EVIDENCE, "online evidence too large")
+    evidence = json.loads(files[EVIDENCE].read_text(), object_pairs_hook=unique)
+    require(isinstance(evidence, dict) and set(evidence) == {
+        "version", "mode", "scope", "status", "profile_sha256", "counts", "blobs",
+        "snapshot_epoch_seconds", "checkpoint_observations", "delivery",
+        "unresolved_attachment_refs", "source_writers_running", "recovery_policy"},
+        "invalid online evidence")
+    require(type(evidence["version"]) is int and evidence["version"] == 1
+            and evidence["mode"] == "operator-online-v1"
+            and evidence["scope"] == expected_scope
+            and evidence["status"] == "PASS_OPERATOR_ONLINE_CAPTURE"
+            and evidence["profile_sha256"] == expected_sha
+            and evidence["source_writers_running"] is True
+            and evidence["recovery_policy"] == ONLINE_POLICY
+            and integer(evidence["snapshot_epoch_seconds"])
+            and evidence["snapshot_epoch_seconds"] > 0
+            and integer(evidence["unresolved_attachment_refs"])
+            and evidence["unresolved_attachment_refs"] == 0, "online receipt mismatch")
+    counts = evidence["counts"]
+    require(isinstance(counts, dict) and set(counts) == TABLES
+            and all(integer(n) for n in counts.values())
+            and counts["accounts"] >= 1
+            and (not counts["active_storage_attachments"] or counts["active_storage_blobs"] > 0),
+            "invalid online table inventory")
+    observations = evidence["checkpoint_observations"]
+    require(isinstance(observations, dict) and set(observations) == {
+        "channel", "before_db_snapshot", "after_copy"}
+            and observations["channel"] == str(profile["channel_id"])
+            and all(integer(observations[k]) and observations[k] < 10**19
+                    for k in ("before_db_snapshot", "after_copy")),
+            "invalid diagnostic checkpoint observation")
+    validate_online_delivery(evidence["delivery"])
+    for name, checksum in profile["config_sha256"].items():
+        file = files.get(CONFIG_PREFIX + name)
+        require(file is not None and file.stat().st_size > 0 and digest(file) == checksum,
+                "online configuration mismatch")
+    validate_blobs(evidence, counts, files)
+    blobs = {"storage/" + row["key"][:2] + "/" + row["key"][2:4] + "/" + row["key"]
+             for row in evidence["blobs"]}
+    expected = {MANIFEST, OPERATOR_PROFILE, EVIDENCE, CHATWOOT_DUMP}
+    expected.update(CONFIG_PREFIX + name for name in profile["config_sha256"])
+    require(set(files) == expected | blobs, "unexpected online artifact")
+    with files[CHATWOOT_DUMP].open("rb") as stream:
+        require(stream.read(5) == b"PGDMP" and files[CHATWOOT_DUMP].stat().st_size > 9,
+                "invalid online PostgreSQL archive")
+    allowed_dirs = {"storage"} | {parent.as_posix() for name in files
+        for parent in PurePosixPath(name).parents if parent != PurePosixPath(".")}
+    for parent, dirs, _ in os.walk(root, followlinks=False, onerror=reject_walk_error):
+        for name in dirs:
+            require((Path(parent) / name).relative_to(root).as_posix() in allowed_dirs,
+                    "unexpected online directory")
+    return count
+
+
 def main():
     try:
         if len(sys.argv) == 3 and sys.argv[1] == "--contract-only":
@@ -555,6 +640,9 @@ def main():
         elif len(sys.argv) == 5 and sys.argv[1] == "--operator-v3":
             count = verify_operator_capture(Path(sys.argv[4]), sys.argv[2], sys.argv[3])
             print(json.dumps({"status": "PASS_OPERATOR_NATIVE_CAPTURE_MANIFEST", "files": count}))
+        elif len(sys.argv) == 5 and sys.argv[1] == "--operator-online-v1":
+            count = verify_operator_online_capture(Path(sys.argv[4]), sys.argv[2], sys.argv[3])
+            print(json.dumps({"status": "PASS_OPERATOR_ONLINE_CAPTURE_MANIFEST", "files": count}))
         elif len(sys.argv) == 2:
             count = verify_prepared_capture(Path(sys.argv[1]))
             print(json.dumps({"status": "PASS_VERIFIED_CAPTURE_MANIFEST", "files": count}))
