@@ -6,6 +6,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/vff-backup/restic.env
+Environment=VFF_VM200_S3_ENDPOINT=http://100.84.224.4:9000
 LoadCredential=vm200.env:/etc/vff-backup-vm200/s3.env
 LoadCredential=vm200.pass:/etc/vff-backup-vm200/restic.pass
 ExecStart=/usr/bin/python3 -I /usr/local/libexec/vff-backup-replicate-vm200 %i

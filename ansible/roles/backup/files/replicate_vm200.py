@@ -7,6 +7,7 @@ directory. No credentials, captured CLI output or restored data are printed.
 """
 import argparse
 import datetime as dt
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -14,8 +15,8 @@ import re
 import socket
 import subprocess
 import tempfile
+from urllib.parse import urlsplit
 
-ENDPOINT = "http://100.84.224.4:9000"
 PRIMARY = "s3:https://s3.portalbase.link/vff-backups/"
 PROFILES = {
     "shm": ("billing-1", "shm/ru-msk-1", "vff-shm-prod", "shm-billing-1"),
@@ -45,6 +46,27 @@ def read_settings(path):
     return result
 
 
+def private_endpoint(source):
+    """The root-owned unit declares the approved Tailscale-only endpoint."""
+    endpoint = source.get("VFF_VM200_S3_ENDPOINT", "")
+    parsed = urlsplit(endpoint)
+    address = ipaddress.IPv4Address(parsed.hostname or "")
+    require(parsed.scheme == "http" and parsed.port == 9000
+            and parsed.netloc == f"{address}:{parsed.port}"
+            and not (parsed.path or parsed.query or parsed.fragment),
+            "invalid destination endpoint")
+    return endpoint, str(address)
+
+
+def check_overlay_route(address):
+    result = subprocess.run(["/usr/sbin/ip", "-j", "route", "get", address],
+                            capture_output=True, check=False, timeout=10)
+    require(result.returncode == 0, "destination route unavailable")
+    routes = json.loads(result.stdout)
+    require(len(routes) == 1 and routes[0].get("dev") == "tailscale0",
+            "destination route is not Tailscale")
+
+
 def environments(job, hostname, source, directory):
     host, suffix, bucket, identity = PROFILES[job]
     expected_source = PRIMARY + suffix
@@ -60,9 +82,10 @@ def environments(job, hostname, source, directory):
         if source.get(name):
             source_env[name] = source[name]
     source_env["RESTIC_REPOSITORY"] = expected_source
+    endpoint, _ = private_endpoint(source)
     cfg = read_settings(directory / "vm200.env")
     require(cfg.get("AWS_ACCESS_KEY_ID") == identity
-            and cfg.get("RESTIC_REPOSITORY") == f"s3:{ENDPOINT}/{bucket}/backup/repo"
+            and cfg.get("RESTIC_REPOSITORY") == f"s3:{endpoint}/{bucket}/backup/repo"
             and cfg.get("AWS_DEFAULT_REGION") == REGION
             and bool(re.fullmatch(r"[0-9a-f]{64}", cfg.get("AWS_SECRET_ACCESS_KEY", ""))),
             "unexpected destination scope")
@@ -78,7 +101,7 @@ def environments(job, hostname, source, directory):
         "RCLONE_CONFIG_VM200_ACCESS_KEY_ID": identity,
         "RCLONE_CONFIG_VM200_SECRET_ACCESS_KEY": cfg["AWS_SECRET_ACCESS_KEY"],
         "RCLONE_CONFIG_VM200_REGION": REGION,
-        "RCLONE_CONFIG_VM200_ENDPOINT": ENDPOINT,
+        "RCLONE_CONFIG_VM200_ENDPOINT": endpoint,
         "RCLONE_CONFIG_VM200_FORCE_PATH_STYLE": "true",
         "RCLONE_CONFIG_VM200_NO_CHECK_BUCKET": "true",
     })
@@ -149,7 +172,7 @@ def metric_write(directory, job, success, timestamp=None):
             temporary = Path(stream.name)
             stream.write(value)
             stream.flush()
-            os.fchmod(stream.fileno(), 0o644)
+            os.fchmod(stream.fileno(), 0o640)
             os.fsync(stream.fileno())
         temporary.replace(path)
 
@@ -163,6 +186,8 @@ def main():
     try:
         source, destination = environments(args.job, socket.gethostname(), os.environ,
                                            Path(os.environ["CREDENTIALS_DIRECTORY"]))
+        _, address = private_endpoint(os.environ)
+        check_overlay_route(address)
         receipt = replicate(args.job, source, destination, copy_only=args.copy_only)
         metric_write(metrics, args.job, True, receipt["snapshot_timestamp"])
         print(json.dumps({"status": "PASS_VM200_COPY", "job": args.job, **receipt}))

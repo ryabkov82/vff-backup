@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Scope, failure behavior and native Restic copy checks for the VM200 hook."""
-import datetime
 import importlib.util
 import json
 import os
@@ -31,6 +30,7 @@ class ScopeTests(unittest.TestCase):
         self.directory = Path(self.root.name)
         (self.directory / "vm200.pass").write_text("synthetic destination\n")
         self.source = {"RESTIC_REPOSITORY": replica.PRIMARY + "shm/ru-msk-1",
+                       "VFF_VM200_S3_ENDPOINT": "http://100.84.224.4:9000",
                        "RESTIC_PASSWORD": "synthetic source", "AWS_ACCESS_KEY_ID": "old-id",
                        "AWS_SECRET_ACCESS_KEY": "old-example"}
         self.settings = {
@@ -61,6 +61,21 @@ class ScopeTests(unittest.TestCase):
                              ("billing-1", dict(self.source, RESTIC_REPOSITORY="wrong"))):
             with self.assertRaises(replica.ReplicationError):
                 replica.environments("shm", host, source, self.directory)
+
+    def test_invalid_endpoint_and_non_overlay_route_rejected(self):
+        for endpoint in ("https://100.84.224.4:9000", "http://100.84.224.4:443",
+                         "http://user@100.84.224.4:9000", "http://100.84.224.4:9000/path"):
+            with self.assertRaises(replica.ReplicationError):
+                replica.private_endpoint({"VFF_VM200_S3_ENDPOINT": endpoint})
+        for device, success in (("tailscale0", True), ("eth0", False)):
+            result = subprocess.CompletedProcess(["ip"], 0,
+                json.dumps([{"dev": device}]).encode(), b"")
+            with patch.object(replica.subprocess, "run", return_value=result):
+                if success:
+                    replica.check_overlay_route("100.84.224.4")
+                else:
+                    with self.assertRaises(replica.ReplicationError):
+                        replica.check_overlay_route("100.84.224.4")
 
     def test_wrong_bucket_rejected(self):
         self.settings["RESTIC_REPOSITORY"] = "s3:http://100.84.224.4:9000/vff-remnawave-prod/backup/repo"
@@ -125,8 +140,10 @@ class ScopeTests(unittest.TestCase):
                                    "snapshot_timestamp": 123}, 0),
                                  (replica.ReplicationError("scope rejected"), 1)):
             with patch("sys.argv", ["replicate_vm200", "shm", "--copy-only"]), \
-                    patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": str(self.directory)}), \
+                    patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": str(self.directory),
+                                            "VFF_VM200_S3_ENDPOINT": self.source["VFF_VM200_S3_ENDPOINT"]}), \
                     patch.object(replica, "environments", return_value=({}, {})), \
+                    patch.object(replica, "check_overlay_route"), \
                     patch.object(replica, "replicate", side_effect=[result]), \
                     patch.object(replica, "metric_write") as metric, \
                     contextlib.redirect_stdout(io.StringIO()) as output:
