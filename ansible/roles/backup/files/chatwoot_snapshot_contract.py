@@ -31,6 +31,8 @@ OPTIONAL_WRITERS = frozenset(("telegram-poller", "web-drafter", "gemma-drafter")
 EVIDENCE = "capture-evidence.json"
 MAX_EVIDENCE = 32 * 1024 * 1024
 CONFIG_PREFIX = "config/"
+STORAGE_PREFIX = "storage/"
+SHA256_PATTERN = r"[0-9a-f]{64}"
 CHATWOOT_DUMP = "chatwoot.dump"
 
 
@@ -181,7 +183,7 @@ def validate_generation(root):
         require(stream.read(5) == b"PGDMP" and files[CHATWOOT_DUMP].stat().st_size > 5,
                 "invalid custom dump header")
     require(all(name in (EVIDENCE, CHATWOOT_DUMP, MANIFEST)
-                or name.startswith((CONFIG_PREFIX, "storage/", "business-state/"))
+                or name.startswith((CONFIG_PREFIX, STORAGE_PREFIX, "business-state/"))
                 for name in files), "unexpected top-level data")
     validate_writer_state(evidence)
     counts = validate_counts(evidence)
@@ -444,7 +446,7 @@ def validate_operator_profile(profile):
     require(isinstance(config, dict), "invalid operator configuration inventory")
     expected.update(OPERATOR_CONFIG_EXTENSIONS.intersection(config))
     require(set(config) == expected
-            and all(isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v)
+            and all(isinstance(v, str) and re.fullmatch(SHA256_PATTERN, v)
                     for v in config.values()), "invalid operator configuration inventory")
     require(profile["images"] == OPERATOR_IMAGES, "operator image profile mismatch")
     return profile
@@ -460,7 +462,7 @@ def operator_file_inventory(profile, evidence, files, counts):
     require(set(evidence["business_offsets"]) == {str(profile["channel_id"])},
             "operator checkpoint scope mismatch")
     validate_blobs(evidence, counts, files)
-    blobs = {"storage/" + row["key"][:2] + "/" + row["key"][2:4] + "/" + row["key"]
+    blobs = {STORAGE_PREFIX + row["key"][:2] + "/" + row["key"][2:4] + "/" + row["key"]
              for row in evidence["blobs"]}
     expected = {MANIFEST, OPERATOR_PROFILE, OPERATOR_FENCE, EVIDENCE, CHATWOOT_DUMP, "redis.rdb"}
     expected.update(CONFIG_PREFIX + name for name in config)
@@ -476,7 +478,7 @@ def operator_file_inventory(profile, evidence, files, counts):
 def verify_operator_capture(root, expected_sha, expected_scope):
     """Only an explicitly pinned v3 profile can authorize this verifier."""
     require(expected_scope in OPERATOR_SCOPES and
-            re.fullmatch(r"[0-9a-f]{64}", expected_sha), "operator profile pin required")
+            re.fullmatch(SHA256_PATTERN, expected_sha), "operator profile pin required")
     root = Path(root)
     count = verify(root)
     files = inventory(root)
@@ -569,7 +571,7 @@ def validate_online_delivery(state):
 def verify_operator_online_capture(root, expected_sha, expected_scope):
     """Verify a DB-snapshot/attachment-closed archive, not a quiesced v3 archive."""
     require(expected_scope in OPERATOR_SCOPES and
-            re.fullmatch(r"[0-9a-f]{64}", expected_sha), "online profile pin required")
+            re.fullmatch(SHA256_PATTERN, expected_sha), "online profile pin required")
     root = Path(root)
     count = verify(root)
     files = inventory(root)
@@ -615,7 +617,7 @@ def verify_operator_online_capture(root, expected_sha, expected_scope):
         require(file is not None and file.stat().st_size > 0 and digest(file) == checksum,
                 "online configuration mismatch")
     validate_blobs(evidence, counts, files)
-    blobs = {"storage/" + row["key"][:2] + "/" + row["key"][2:4] + "/" + row["key"]
+    blobs = {STORAGE_PREFIX + row["key"][:2] + "/" + row["key"][2:4] + "/" + row["key"]
              for row in evidence["blobs"]}
     expected = {MANIFEST, OPERATOR_PROFILE, EVIDENCE, CHATWOOT_DUMP}
     expected.update(CONFIG_PREFIX + name for name in profile["config_sha256"])
