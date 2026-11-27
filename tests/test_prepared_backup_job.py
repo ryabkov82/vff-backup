@@ -108,6 +108,28 @@ class PreparedJobTests(unittest.TestCase):
         self.assertNotEqual(self.run_job().returncode, 0)
         self.assertFalse(self.harness._restic_calls())
 
+    def test_online_job_profile_is_explicit_and_disjoint(self):
+        for name, scope in (("chatwoot-online", "OPERATOR_PROD"),
+                            ("chatwoot-operator-online-compatibility", "OPERATOR_COMPATIBILITY_TEST")):
+            self.job["name"] = name
+            self.job["prepared_snapshot"].update(kind="chatwoot", profile="operator-online-v1",
+                scope=scope, profile_sha256="a"*64, trusted_paths=[str(self.modules)],
+                schedule_enabled=True)
+            self.render()
+            result = self.run_job()
+            # Generic fixture cannot pass the online semantic verification.
+            self.assertIn("operator online snapshot verification failed", result.stderr)
+            self.assertFalse(self.harness._restic_calls())
+            for field, value in (("profile", "operator-v3"), ("scope", "WRONG"),
+                                 ("profile_sha256", "invalid")):
+                with self.subTest(name=name, field=field):
+                    saved = self.job["prepared_snapshot"][field]
+                    self.job["prepared_snapshot"][field] = value
+                    self.render()
+                    self.assertNotEqual(self.run_job().returncode, 0)
+                    self.assertFalse(self.harness._restic_calls())
+                    self.job["prepared_snapshot"][field] = saved
+
     def test_chatwoot_requires_declared_execution_dependencies(self):
         self.job["name"] = "vm205-prepared-drill"
         self.job["prepared_snapshot"]["kind"] = "chatwoot"
@@ -307,6 +329,31 @@ class VerifiedCaptureManifestTests(unittest.TestCase):
                 seal(root)
                 with self.assertRaisesRegex(ValueError, "undeclared v2 capture artifact"):
                     contract.verify_prepared_capture(root)
+
+    def test_postgres_checkpoint_compatibility_export(self):
+        contract = old_contract.contract
+        from verify_prepared_snapshot import seal
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make(root)
+            overlay = root / contract.V2_CHECKPOINT_OVERLAY
+            overlay.write_text('# VM205 TEST3 only; migrate the checkpoint before activation.\n'
+                               'services:\n  telegram-business-test3:\n    environment:\n'
+                               '      VFF_TELEGRAM_CHECKPOINT_BACKEND: "postgres"\n')
+            overlay.chmod(0o600)
+            offset = root / "source/test3-checkpoint/channel-1.offset"
+            offset.write_text("123\n")
+            count = seal(root)
+            self.assertEqual(contract.verify_prepared_capture(root), count)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make(root)
+            overlay = root / contract.V2_CHECKPOINT_OVERLAY
+            overlay.write_text("unexpected: true\n")
+            overlay.chmod(0o600)
+            seal(root)
+            with self.assertRaisesRegex(ValueError, "invalid v2 checkpoint overlay"):
+                contract.verify_prepared_capture(root)
 
     def test_empty_undeclared_directory_is_rejected(self):
         contract = old_contract.contract

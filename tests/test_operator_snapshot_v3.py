@@ -116,3 +116,47 @@ class OperatorProfileTests(unittest.TestCase):
                 c.validate_operator_profile(profile)
             del profile["config_sha256"][c.OPERATOR_TEST]
             self.assertEqual(c.validate_operator_profile(profile)["scope"],"OPERATOR_PROD")
+
+    def test_explicit_smtp_and_bootstrap_config_extensions(self):
+        for extension in (set(), {c.OPERATOR_SMTP}, {c.OPERATOR_BOOTSTRAP},
+                          set(c.OPERATOR_CONFIG_EXTENSIONS)):
+            with self.subTest(extension=extension), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                _, scope = fixture(root)
+                profile = json.loads((root/c.OPERATOR_PROFILE).read_text())
+                for name in extension:
+                    profile["config_sha256"][name] = hashlib.sha256(
+                        put(root, "config/"+name, b"synthetic operational config").read_bytes()
+                    ).hexdigest()
+                pin = hashlib.sha256(put_json(root, c.OPERATOR_PROFILE, profile).read_bytes()).hexdigest()
+                evidence = json.loads((root/c.EVIDENCE).read_text())
+                evidence["profile_sha256"] = pin
+                put_json(root, c.EVIDENCE, evidence)
+                count = seal(root)
+                self.assertEqual(c.verify_operator_capture(root, pin, scope), count)
+
+    def test_unknown_operational_extension_rejected_even_with_resealed_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixture(root)
+            profile = json.loads((root/c.OPERATOR_PROFILE).read_text())
+            profile["config_sha256"][".env.unreviewed"] = "a"*64
+            with self.assertRaises(ValueError):
+                c.validate_operator_profile(profile)
+
+    def test_declared_extension_cannot_be_missing_or_tampered(self):
+        for missing in (True, False):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                _, scope = fixture(root)
+                profile = json.loads((root/c.OPERATOR_PROFILE).read_text())
+                profile["config_sha256"][c.OPERATOR_SMTP] = hashlib.sha256(b"expected").hexdigest()
+                pin = hashlib.sha256(put_json(root, c.OPERATOR_PROFILE, profile).read_bytes()).hexdigest()
+                evidence = json.loads((root/c.EVIDENCE).read_text())
+                evidence["profile_sha256"] = pin
+                put_json(root, c.EVIDENCE, evidence)
+                if not missing:
+                    put(root, "config/"+c.OPERATOR_SMTP, b"modified")
+                seal(root)
+                with self.assertRaises(ValueError):
+                    c.verify_operator_capture(root, pin, scope)

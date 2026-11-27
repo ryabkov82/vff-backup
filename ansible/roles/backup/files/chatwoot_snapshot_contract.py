@@ -31,6 +31,8 @@ OPTIONAL_WRITERS = frozenset(("telegram-poller", "web-drafter", "gemma-drafter")
 EVIDENCE = "capture-evidence.json"
 MAX_EVIDENCE = 32 * 1024 * 1024
 CONFIG_PREFIX = "config/"
+STORAGE_PREFIX = "storage/"
+SHA256_PATTERN = r"[0-9a-f]{64}"
 CHATWOOT_DUMP = "chatwoot.dump"
 
 
@@ -181,7 +183,7 @@ def validate_generation(root):
         require(stream.read(5) == b"PGDMP" and files[CHATWOOT_DUMP].stat().st_size > 5,
                 "invalid custom dump header")
     require(all(name in (EVIDENCE, CHATWOOT_DUMP, MANIFEST)
-                or name.startswith((CONFIG_PREFIX, "storage/", "business-state/"))
+                or name.startswith((CONFIG_PREFIX, STORAGE_PREFIX, "business-state/"))
                 for name in files), "unexpected top-level data")
     validate_writer_state(evidence)
     counts = validate_counts(evidence)
@@ -224,11 +226,12 @@ def verify_restored(root):
 # review only. A scheduled Chatwoot job must use the tested capture adapter,
 # whose full-stack receipt is sealed together with the exact data generation.
 V2_RECEIPT = "capture-receipt.json"
+V2_CHECKPOINT_EXPORT = "source/test3-checkpoint/channel-1.offset"
 V2_REQUIRED = frozenset((
     "source/chatwoot.dump", "source/shm.sql", "source/remna.dump",
     "source/chatwoot.env", "source/backends.env", "source/portal-config.json",
     "source/portal-image.json", "source/test3-scope.env",
-    "source/test3-connection.env", "source/test3-checkpoint/channel-1.offset",
+    "source/test3-connection.env", V2_CHECKPOINT_EXPORT,
     "source/config/compose.operator.yaml", "source/config/compose.functional.yaml",
     "source/config/compose.backends205.yaml", "source/image-inventory.json",
     "source/blob-inventory.json", "source/delivery-fence.json", "source/link/link.env", "source/link/verify",
@@ -262,8 +265,9 @@ V2_DATA_DIRS = frozenset((
     "source/shm_data", "source/mails", "source/storage",
     "source/redis", "source/redis/appendonlydir", "source/remna_redis",
     "source/remna_redis/appendonlydir", "source/test3-checkpoint"))
+V2_CHECKPOINT_OVERLAY = "source/config/compose.functional.business-test3-checkpoint.override.yaml"
 V2_OPTIONAL = frozenset((
-    "source/redis/dump.rdb", "source/remna_redis/dump.rdb"))
+    "source/redis/dump.rdb", "source/remna_redis/dump.rdb", V2_CHECKPOINT_OVERLAY))
 V2_DATA_PATTERNS = (
     # Only local synthetic SMTP sink messages (not arbitrary mail/log trees).
     re.compile(r"source/mails/\d{19}-[0-9a-f]{24}\.eml", re.ASCII),
@@ -290,11 +294,20 @@ def v2_blob_paths(files, counts):
 def validate_v2_inventory(root, files, counts):
     fixed = V2_REQUIRED | V2_OPTIONAL | {MANIFEST}
     blobs = v2_blob_paths(files, counts)
+    if V2_CHECKPOINT_OVERLAY in files:
+        require(files[V2_CHECKPOINT_OVERLAY].read_text() == (
+            '# VM205 TEST3 only; migrate the checkpoint before activation.\n'
+            'services:\n  telegram-business-test3:\n    environment:\n'
+            '      VFF_TELEGRAM_CHECKPOINT_BACKEND: "postgres"\n'),
+            "invalid v2 checkpoint overlay")
+        exported = files[V2_CHECKPOINT_EXPORT].read_text()
+        require(re.fullmatch(r"(?:0|[1-9]\d{0,18})\n", exported, re.ASCII) and int(exported) < 2**63,
+                "invalid v2 PostgreSQL checkpoint export")
     require(all(name in fixed or name in blobs or
                 any(pattern.fullmatch(name) for pattern in V2_DATA_PATTERNS)
                 for name in files), "undeclared v2 capture artifact")
     checkpoints = {name for name in files if name.startswith("source/test3-checkpoint/")}
-    required_checkpoints = {"source/test3-checkpoint/channel-1.offset",
+    required_checkpoints = {V2_CHECKPOINT_EXPORT,
                             "source/test3-checkpoint/singleton.lock"}
     require(required_checkpoints <= checkpoints and len(checkpoints - required_checkpoints) <= 1,
             "invalid v2 checkpoint inventory")
@@ -400,6 +413,10 @@ OPERATOR_CONFIG = frozenset((
     "bin/chatwoot-link-verify", "bin/shm-operator-ca.crt"))
 OPERATOR_LIVE = "compose.operator-contact-link-live.override.yaml"
 OPERATOR_TEST = "compose.operator-recovery-test.override.yaml"
+OPERATOR_SMTP = ".env.operator.smtp"
+OPERATOR_BOOTSTRAP = "compose.bootstrap.yaml"
+# Explicit operational extensions; no arbitrary environment/Compose files.
+OPERATOR_CONFIG_EXTENSIONS = frozenset((OPERATOR_SMTP, OPERATOR_BOOTSTRAP))
 OPERATOR_CHECKS = frozenset(("postgres", "redis", "blob_integrity", "checkpoint",
                             "native_encryption", "native_hmac", "delivery_fence",
                             "isolated_network", "scratch_cleanup"))
@@ -437,8 +454,10 @@ def validate_operator_profile(profile):
     if profile["scope"] == "OPERATOR_COMPATIBILITY_TEST":
         expected.add(OPERATOR_TEST)
     config = profile["config_sha256"]
-    require(isinstance(config, dict) and set(config) == expected
-            and all(isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v)
+    require(isinstance(config, dict), "invalid operator configuration inventory")
+    expected.update(OPERATOR_CONFIG_EXTENSIONS.intersection(config))
+    require(set(config) == expected
+            and all(isinstance(v, str) and re.fullmatch(SHA256_PATTERN, v)
                     for v in config.values()), "invalid operator configuration inventory")
     require(profile["images"] == OPERATOR_IMAGES, "operator image profile mismatch")
     return profile
@@ -454,7 +473,7 @@ def operator_file_inventory(profile, evidence, files, counts):
     require(set(evidence["business_offsets"]) == {str(profile["channel_id"])},
             "operator checkpoint scope mismatch")
     validate_blobs(evidence, counts, files)
-    blobs = {"storage/" + row["key"][:2] + "/" + row["key"][2:4] + "/" + row["key"]
+    blobs = {STORAGE_PREFIX + row["key"][:2] + "/" + row["key"][2:4] + "/" + row["key"]
              for row in evidence["blobs"]}
     expected = {MANIFEST, OPERATOR_PROFILE, OPERATOR_FENCE, EVIDENCE, CHATWOOT_DUMP, "redis.rdb"}
     expected.update(CONFIG_PREFIX + name for name in config)
@@ -470,7 +489,7 @@ def operator_file_inventory(profile, evidence, files, counts):
 def verify_operator_capture(root, expected_sha, expected_scope):
     """Only an explicitly pinned v3 profile can authorize this verifier."""
     require(expected_scope in OPERATOR_SCOPES and
-            re.fullmatch(r"[0-9a-f]{64}", expected_sha), "operator profile pin required")
+            re.fullmatch(SHA256_PATTERN, expected_sha), "operator profile pin required")
     root = Path(root)
     count = verify(root)
     files = inventory(root)
@@ -541,6 +560,140 @@ def validate_operator_delivery_fence(path):
 
 
 
+ONLINE_POLICY = {
+    "redis": "EMPTY_ON_RESTORE",
+    "checkpoint": "OBSERVATION_ONLY",
+    "external_delivery": "ISOLATED_UNTIL_OPERATOR_RECONCILIATION",
+    "ambiguous_telegram_sends": "QUARANTINE_NO_RETRY",
+}
+CHECKPOINT_POLICY = {**ONLINE_POLICY, "checkpoint": "POSTGRES_RECONCILE_BEFORE_ACTIVATION"}
+CHECKPOINT_BACKEND_KEY = "VFF_TELEGRAM_CHECKPOINT_BACKEND"
+CHECKPOINT_CONNECTION_KEY = "VFF_TELEGRAM_BUSINESS_CONNECTION_ID"
+CHECKPOINT_ENV = ".env.operator.business"
+MAX_CHECKPOINT_ID = 2**63 - 1
+
+
+def operator_checkpoint_config(config, profile):
+    """Read only the two scoped declarations, never return credentials."""
+    selected = {}
+    for name in (".env.operator", CHECKPOINT_ENV, ".env.operator.link"):
+        for line in (config / name).read_text().splitlines():
+            key, sep, value = line.partition("=")
+            if sep and key in (CHECKPOINT_BACKEND_KEY, CHECKPOINT_CONNECTION_KEY):
+                require(name == CHECKPOINT_ENV and key not in selected,
+                        "ambiguous checkpoint configuration")
+                selected[key] = value
+    backend = selected.get(CHECKPOINT_BACKEND_KEY, "file")
+    require(backend in ("file", "postgres"), "invalid checkpoint backend")
+    if backend == "file":
+        return backend, None
+    connection = selected.get(CHECKPOINT_CONNECTION_KEY, "")
+    require(re.fullmatch(r"[!-~]{1,256}", connection), "invalid checkpoint connection scope")
+    scope = [profile["channel_id"], profile["account_id"], profile["business_inbox_id"],
+             profile["bot_name"].lower(), connection]
+    fingerprint = hashlib.sha256(json.dumps(scope, separators=(",", ":"),
+                                           ensure_ascii=False).encode()).hexdigest()
+    return backend, fingerprint
+
+
+def validate_online_checkpoint(checkpoint, profile, fingerprint):
+    require(isinstance(checkpoint, dict) and set(checkpoint) == {
+        "channel_id", "scope_sha256", "next_offset"}, "invalid checkpoint inventory")
+    require(type(checkpoint["channel_id"]) is int and checkpoint["channel_id"] == profile["channel_id"]
+            and checkpoint["scope_sha256"] == fingerprint
+            and integer(checkpoint["next_offset"]) and checkpoint["next_offset"] <= MAX_CHECKPOINT_ID,
+            "invalid checkpoint scope/cursor")
+
+ONLINE_DELIVERY_KEYS = frozenset(("channels", "scoped_inboxes", "outgoing", "unconfirmed",
+                                  "failed", "invalid_status", "invalid_ack", "reservations"))
+
+
+def validate_online_delivery(state):
+    require(isinstance(state, dict) and set(state) == ONLINE_DELIVERY_KEYS
+            and all(integer(n) for n in state.values())
+            and state["channels"] == state["scoped_inboxes"] == 1
+            and all(state[k] <= state["outgoing"]
+                    for k in ONLINE_DELIVERY_KEYS - {"channels", "scoped_inboxes", "outgoing"}),
+            "invalid online delivery inventory")
+
+
+def validate_online_evidence(root, evidence, profile, expected_sha, expected_scope):
+    backend, fingerprint = operator_checkpoint_config(root / "config", profile)
+    postgres_mode = backend == "postgres"
+    checkpoint_field = "checkpoint" if postgres_mode else "checkpoint_observations"
+    require(isinstance(evidence, dict) and set(evidence) == {
+        "version", "mode", "scope", "status", "profile_sha256", "counts", "blobs",
+        "snapshot_epoch_seconds", checkpoint_field, "delivery",
+        "unresolved_attachment_refs", "source_writers_running", "recovery_policy"},
+        "invalid online evidence")
+    require(type(evidence["version"]) is int and evidence["version"] == (2 if postgres_mode else 1)
+            and evidence["mode"] == "operator-online-v1"
+            and evidence["scope"] == expected_scope
+            and evidence["status"] == "PASS_OPERATOR_ONLINE_CAPTURE"
+            and evidence["profile_sha256"] == expected_sha
+            and evidence["source_writers_running"] is True
+            and evidence["recovery_policy"] == (CHECKPOINT_POLICY if postgres_mode else ONLINE_POLICY)
+            and integer(evidence["snapshot_epoch_seconds"])
+            and evidence["snapshot_epoch_seconds"] > 0
+            and integer(evidence["unresolved_attachment_refs"])
+            and evidence["unresolved_attachment_refs"] == 0, "online receipt mismatch")
+    counts = evidence["counts"]
+    require(isinstance(counts, dict) and set(counts) == TABLES
+            and all(integer(n) for n in counts.values())
+            and counts["accounts"] >= 1
+            and (not counts["active_storage_attachments"] or counts["active_storage_blobs"] > 0),
+            "invalid online table inventory")
+    if postgres_mode:
+        validate_online_checkpoint(evidence["checkpoint"], profile, fingerprint)
+    else:
+        observations = evidence["checkpoint_observations"]
+        require(isinstance(observations, dict) and set(observations) == {
+            "channel", "before_db_snapshot", "after_copy"}
+                and observations["channel"] == str(profile["channel_id"])
+                and all(integer(observations[k]) and observations[k] < 10**19
+                        for k in ("before_db_snapshot", "after_copy")),
+                "invalid diagnostic checkpoint observation")
+    validate_online_delivery(evidence["delivery"])
+    return counts
+
+
+def verify_operator_online_capture(root, expected_sha, expected_scope):
+    """Verify a DB-snapshot/attachment-closed archive, not a quiesced v3 archive."""
+    require(expected_scope in OPERATOR_SCOPES and
+            re.fullmatch(SHA256_PATTERN, expected_sha), "online profile pin required")
+    root = Path(root)
+    count = verify(root)
+    files = inventory(root)
+    profile_file = files[OPERATOR_PROFILE]
+    require(profile_file.stat().st_size <= 65536 and digest(profile_file) == expected_sha,
+            "online profile hash mismatch")
+    profile = validate_operator_profile(json.loads(profile_file.read_text(), object_pairs_hook=unique))
+    require(profile["scope"] == expected_scope, "online scope mismatch")
+    require(files[EVIDENCE].stat().st_size <= MAX_EVIDENCE, "online evidence too large")
+    evidence = json.loads(files[EVIDENCE].read_text(), object_pairs_hook=unique)
+    counts = validate_online_evidence(root, evidence, profile, expected_sha, expected_scope)
+    for name, checksum in profile["config_sha256"].items():
+        file = files.get(CONFIG_PREFIX + name)
+        require(file is not None and file.stat().st_size > 0 and digest(file) == checksum,
+                "online configuration mismatch")
+    validate_blobs(evidence, counts, files)
+    blobs = {STORAGE_PREFIX + row["key"][:2] + "/" + row["key"][2:4] + "/" + row["key"]
+             for row in evidence["blobs"]}
+    expected = {MANIFEST, OPERATOR_PROFILE, EVIDENCE, CHATWOOT_DUMP}
+    expected.update(CONFIG_PREFIX + name for name in profile["config_sha256"])
+    require(set(files) == expected | blobs, "unexpected online artifact")
+    with files[CHATWOOT_DUMP].open("rb") as stream:
+        require(stream.read(5) == b"PGDMP" and files[CHATWOOT_DUMP].stat().st_size > 9,
+                "invalid online PostgreSQL archive")
+    allowed_dirs = {"storage"} | {parent.as_posix() for name in files
+        for parent in PurePosixPath(name).parents if parent != PurePosixPath(".")}
+    for parent, dirs, _ in os.walk(root, followlinks=False, onerror=reject_walk_error):
+        for name in dirs:
+            require((Path(parent) / name).relative_to(root).as_posix() in allowed_dirs,
+                    "unexpected online directory")
+    return count
+
+
 def main():
     try:
         if len(sys.argv) == 3 and sys.argv[1] == "--contract-only":
@@ -549,6 +702,9 @@ def main():
         elif len(sys.argv) == 5 and sys.argv[1] == "--operator-v3":
             count = verify_operator_capture(Path(sys.argv[4]), sys.argv[2], sys.argv[3])
             print(json.dumps({"status": "PASS_OPERATOR_NATIVE_CAPTURE_MANIFEST", "files": count}))
+        elif len(sys.argv) == 5 and sys.argv[1] == "--operator-online-v1":
+            count = verify_operator_online_capture(Path(sys.argv[4]), sys.argv[2], sys.argv[3])
+            print(json.dumps({"status": "PASS_OPERATOR_ONLINE_CAPTURE_MANIFEST", "files": count}))
         elif len(sys.argv) == 2:
             count = verify_prepared_capture(Path(sys.argv[1]))
             print(json.dumps({"status": "PASS_VERIFIED_CAPTURE_MANIFEST", "files": count}))

@@ -49,7 +49,17 @@
       - item.prepared_snapshot.scope | default('') == ('OPERATOR_COMPATIBILITY_TEST' if item.name == 'chatwoot-operator-compatibility' else 'OPERATOR_PROD')
       - item.name is match('^chatwoot(-[A-Za-z0-9_-]+)?$')
   loop: "{{ backup_jobs | default([]) }}"
-  when: item.prepared_snapshot is defined and (item.prepared_snapshot.kind | default('generic')) == 'chatwoot' and item.name != 'vm205-prepared-drill'
+  when: item.prepared_snapshot is defined and (item.prepared_snapshot.kind | default('generic')) == 'chatwoot' and item.name not in ['vm205-prepared-drill', 'chatwoot-online', 'chatwoot-operator-online-compatibility']
+
+- name: Require distinct pinned online operator profile
+  ansible.builtin.assert:
+    that:
+      - item.prepared_snapshot.kind == 'chatwoot'
+      - item.prepared_snapshot.profile | default('') == 'operator-online-v1'
+      - item.prepared_snapshot.profile_sha256 | default('') is match('^[0-9a-f]{64}$')
+      - item.prepared_snapshot.scope | default('') == ('OPERATOR_COMPATIBILITY_TEST' if item.name == 'chatwoot-operator-online-compatibility' else 'OPERATOR_PROD')
+  loop: "{{ backup_jobs | default([]) }}"
+  when: item.name in ['chatwoot-online', 'chatwoot-operator-online-compatibility']
 
 - name: Keep VM205 v2 profile distinct
   ansible.builtin.assert:
