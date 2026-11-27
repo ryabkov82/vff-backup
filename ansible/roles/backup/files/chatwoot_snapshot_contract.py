@@ -226,11 +226,12 @@ def verify_restored(root):
 # review only. A scheduled Chatwoot job must use the tested capture adapter,
 # whose full-stack receipt is sealed together with the exact data generation.
 V2_RECEIPT = "capture-receipt.json"
+V2_CHECKPOINT_EXPORT = "source/test3-checkpoint/channel-1.offset"
 V2_REQUIRED = frozenset((
     "source/chatwoot.dump", "source/shm.sql", "source/remna.dump",
     "source/chatwoot.env", "source/backends.env", "source/portal-config.json",
     "source/portal-image.json", "source/test3-scope.env",
-    "source/test3-connection.env", "source/test3-checkpoint/channel-1.offset",
+    "source/test3-connection.env", V2_CHECKPOINT_EXPORT,
     "source/config/compose.operator.yaml", "source/config/compose.functional.yaml",
     "source/config/compose.backends205.yaml", "source/image-inventory.json",
     "source/blob-inventory.json", "source/delivery-fence.json", "source/link/link.env", "source/link/verify",
@@ -299,14 +300,14 @@ def validate_v2_inventory(root, files, counts):
             'services:\n  telegram-business-test3:\n    environment:\n'
             '      VFF_TELEGRAM_CHECKPOINT_BACKEND: "postgres"\n'),
             "invalid v2 checkpoint overlay")
-        exported = files["source/test3-checkpoint/channel-1.offset"].read_text()
-        require(re.fullmatch(r"(?:0|[1-9][0-9]{0,18})\n", exported) and int(exported) < 2**63,
+        exported = files[V2_CHECKPOINT_EXPORT].read_text()
+        require(re.fullmatch(r"(?:0|[1-9]\d{0,18})\n", exported, re.ASCII) and int(exported) < 2**63,
                 "invalid v2 PostgreSQL checkpoint export")
     require(all(name in fixed or name in blobs or
                 any(pattern.fullmatch(name) for pattern in V2_DATA_PATTERNS)
                 for name in files), "undeclared v2 capture artifact")
     checkpoints = {name for name in files if name.startswith("source/test3-checkpoint/")}
-    required_checkpoints = {"source/test3-checkpoint/channel-1.offset",
+    required_checkpoints = {V2_CHECKPOINT_EXPORT,
                             "source/test3-checkpoint/singleton.lock"}
     require(required_checkpoints <= checkpoints and len(checkpoints - required_checkpoints) <= 1,
             "invalid v2 checkpoint inventory")
