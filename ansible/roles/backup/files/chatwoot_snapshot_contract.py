@@ -264,8 +264,9 @@ V2_DATA_DIRS = frozenset((
     "source/shm_data", "source/mails", "source/storage",
     "source/redis", "source/redis/appendonlydir", "source/remna_redis",
     "source/remna_redis/appendonlydir", "source/test3-checkpoint"))
+V2_CHECKPOINT_OVERLAY = "source/config/compose.functional.business-test3-checkpoint.override.yaml"
 V2_OPTIONAL = frozenset((
-    "source/redis/dump.rdb", "source/remna_redis/dump.rdb"))
+    "source/redis/dump.rdb", "source/remna_redis/dump.rdb", V2_CHECKPOINT_OVERLAY))
 V2_DATA_PATTERNS = (
     # Only local synthetic SMTP sink messages (not arbitrary mail/log trees).
     re.compile(r"source/mails/\d{19}-[0-9a-f]{24}\.eml", re.ASCII),
@@ -292,6 +293,15 @@ def v2_blob_paths(files, counts):
 def validate_v2_inventory(root, files, counts):
     fixed = V2_REQUIRED | V2_OPTIONAL | {MANIFEST}
     blobs = v2_blob_paths(files, counts)
+    if V2_CHECKPOINT_OVERLAY in files:
+        require(files[V2_CHECKPOINT_OVERLAY].read_text() == (
+            '# VM205 TEST3 only; migrate the checkpoint before activation.\n'
+            'services:\n  telegram-business-test3:\n    environment:\n'
+            '      VFF_TELEGRAM_CHECKPOINT_BACKEND: "postgres"\n'),
+            "invalid v2 checkpoint overlay")
+        exported = files["source/test3-checkpoint/channel-1.offset"].read_text()
+        require(re.fullmatch(r"(?:0|[1-9][0-9]{0,18})\n", exported) and int(exported) < 2**63,
+                "invalid v2 PostgreSQL checkpoint export")
     require(all(name in fixed or name in blobs or
                 any(pattern.fullmatch(name) for pattern in V2_DATA_PATTERNS)
                 for name in files), "undeclared v2 capture artifact")

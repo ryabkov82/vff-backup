@@ -330,6 +330,31 @@ class VerifiedCaptureManifestTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "undeclared v2 capture artifact"):
                     contract.verify_prepared_capture(root)
 
+    def test_postgres_checkpoint_compatibility_export(self):
+        contract = old_contract.contract
+        from verify_prepared_snapshot import seal
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make(root)
+            overlay = root / contract.V2_CHECKPOINT_OVERLAY
+            overlay.write_text('# VM205 TEST3 only; migrate the checkpoint before activation.\n'
+                               'services:\n  telegram-business-test3:\n    environment:\n'
+                               '      VFF_TELEGRAM_CHECKPOINT_BACKEND: "postgres"\n')
+            overlay.chmod(0o600)
+            offset = root / "source/test3-checkpoint/channel-1.offset"
+            offset.write_text("123\n")
+            count = seal(root)
+            self.assertEqual(contract.verify_prepared_capture(root), count)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make(root)
+            overlay = root / contract.V2_CHECKPOINT_OVERLAY
+            overlay.write_text("unexpected: true\n")
+            overlay.chmod(0o600)
+            seal(root)
+            with self.assertRaisesRegex(ValueError, "invalid v2 checkpoint overlay"):
+                contract.verify_prepared_capture(root)
+
     def test_empty_undeclared_directory_is_rejected(self):
         contract = old_contract.contract
         from verify_prepared_snapshot import seal
